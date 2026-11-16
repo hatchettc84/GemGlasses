@@ -31,6 +31,8 @@ import com.lpecom.gemglasses.ui.HomeScreen
 import com.lpecom.gemglasses.ui.SettingsScreen
 import com.lpecom.gemglasses.ui.TranscriptScreen
 import com.lpecom.gemglasses.ui.theme.GemGlassesTheme
+import com.lpecom.gemglasses.bobai.ui.BobAiRoot
+import com.lpecom.gemglasses.bobai.ui.BobAiTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -39,12 +41,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            GemGlassesTheme {
+            // BobAI is the launcher UI. The original GemGlasses (Gemini Live) screens
+            // are unchanged and reachable from BobAI Settings → Live voice.
+            BobAiTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    GemGlassesRoot()
+                    BobAiRoot(legacyContent = { GemGlassesTheme { GemGlassesRoot() } })
                 }
             }
         }
@@ -58,7 +62,7 @@ private enum class Tab(val route: String, val label: String, val icon: ImageVect
 }
 
 @Composable
-private fun GemGlassesRoot() {
+internal fun GemGlassesRoot() {
     val navController = rememberNavController()
     Scaffold(
         bottomBar = {

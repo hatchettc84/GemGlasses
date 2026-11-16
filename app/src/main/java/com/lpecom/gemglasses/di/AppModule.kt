@@ -3,6 +3,10 @@ package com.lpecom.gemglasses.di
 import android.content.Context
 import android.util.Log
 import com.lpecom.gemglasses.BuildConfig
+import com.lpecom.gemglasses.bobai.data.BobAiController
+import com.lpecom.gemglasses.bobai.data.JobSessionStore
+import java.io.File
+import java.util.concurrent.Executors
 import com.lpecom.gemglasses.glasses.GlassesBackend
 import com.lpecom.gemglasses.glasses.mock.MockGlassesBackend
 import com.lpecom.gemglasses.tools.VisionBridge
@@ -38,6 +42,22 @@ object AppModule {
         .pingInterval(20, TimeUnit.SECONDS)
         .connectTimeout(15, TimeUnit.SECONDS)
         .build()
+
+    /**
+     * BobAI local-first job/session store. Writes are serialized on one
+     * background thread so the UI never blocks on disk.
+     */
+    @Provides
+    @Singleton
+    fun bobAiController(@ApplicationContext context: Context): BobAiController {
+        val store = JobSessionStore(File(context.filesDir, "bobai/store.json"))
+        val writer = Executors.newSingleThreadExecutor()
+        return BobAiController(store, persist = { snapshot ->
+            writer.execute {
+                runCatching { store.save(snapshot) }.onFailure { Log.e("BobAI", "Saving local store failed", it) }
+            }
+        })
+    }
 
     /**
      * Selects the glasses backend at runtime. The real Meta DAT backend is

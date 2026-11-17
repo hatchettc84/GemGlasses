@@ -62,7 +62,7 @@ object AppModule {
     /**
      * Selects the glasses backend at runtime. The real Meta DAT backend is
      * loaded reflectively so `src/main` never references the SDK — that keeps
-     * mock/CI builds compiling without a github_token.
+     * mock/CI builds compiling without the SDK.
      */
     @Provides
     @Singleton

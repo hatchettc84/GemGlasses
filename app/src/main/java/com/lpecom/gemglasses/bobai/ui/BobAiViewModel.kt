@@ -26,6 +26,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 
 /** Truthful glasses status. Mock builds never claim real hardware is connected. */
@@ -51,7 +54,7 @@ class BobAiViewModel @Inject constructor(
                 if (first == null) first = jpeg
             }
             val saved = first?.let { bytes ->
-                java.io.File(getApplication<Application>().filesDir, "glasses_test.jpg").writeBytes(bytes)
+                File(getApplication<Application>().filesDir, "glasses_test.jpg").writeBytes(bytes)
                 bytes.size
             }
             message = if (saved != null) "Glasses camera: $count frame(s), first ${saved / 1024} KB saved."
@@ -68,6 +71,71 @@ class BobAiViewModel @Inject constructor(
             val granted = glassesManager.ensureCameraPermission()
             message = if (granted) "Glasses camera allowed." else "Glasses camera not allowed."
         }
+    }
+
+    /** True only while the glasses camera is open for an explicit capture. */
+    var capturing by mutableStateOf(false)
+        private set
+
+    /**
+     * Explicit, user-initiated capture into the active job. Real-glasses
+     * builds open the glasses camera just long enough for one settled frame
+     * and save it to app storage; mock builds record a labelled placeholder.
+     * Never falls back to a placeholder when real glasses are expected.
+     */
+    fun capture() {
+        if (capturing) return
+        if (!BuildConfig.USE_REAL_GLASSES) {
+            controller.mockCapture()
+            return
+        }
+        val session = controller.activeSession()
+        if (session == null) {
+            message = "Start a job session to capture a photo."
+            return
+        }
+        if (!glasses.value.ok) {
+            message = "Glasses not connected. Connect them in Settings → Hardware, then capture again."
+            return
+        }
+        viewModelScope.launch {
+            capturing = true
+            try {
+                val jpeg = grabGlassesFrame()
+                if (jpeg == null) {
+                    message = "No image from the glasses. Nothing was saved — try again."
+                    return@launch
+                }
+                val ref = "$CAPTURE_DIR/${session.id}-${System.currentTimeMillis()}.jpg"
+                val file = captureFile(ref)
+                withContext(Dispatchers.IO) {
+                    file.parentFile?.mkdirs()
+                    file.writeBytes(jpeg)
+                }
+                message = if (controller.addCapture(ref, "glasses") != null) {
+                    "Photo saved to this job."
+                } else {
+                    file.delete()
+                    "The session ended before the photo was saved."
+                }
+            } finally {
+                capturing = false
+            }
+        }
+    }
+
+    /** Where a capture reference lives on disk (app-private storage). */
+    fun captureFile(ref: String): File = File(getApplication<Application>().filesDir, ref)
+
+    /**
+     * Opens the glasses camera for one capture. The first frame arrives about
+     * 5 s after the stream starts; keeping the second frame gives the camera a
+     * moment to settle exposure. The stream closes as soon as it returns.
+     */
+    private suspend fun grabGlassesFrame(): ByteArray? {
+        var last: ByteArray? = null
+        cameraSource.runBurst(maxDurationMs = 15_000, maxFrames = 2) { last = it }
+        return last
     }
 
     val snapshot: StateFlow<StoreSnapshot> = controller.state
@@ -134,5 +202,9 @@ class BobAiViewModel @Inject constructor(
 
     override fun onCleared() {
         runCatching { connectivity.unregisterNetworkCallback(callback) }
+    }
+
+    private companion object {
+        const val CAPTURE_DIR = "captures"
     }
 }

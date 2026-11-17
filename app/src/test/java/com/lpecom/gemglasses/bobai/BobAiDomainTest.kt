@@ -205,6 +205,27 @@ class VerticalSliceTest {
         assertNull(controller(file).activeSession())
     }
 
+    @Test fun `real captures are logged, survive restore, and are counted apart from mocks`() {
+        val file = File(tmp.root, "bobai/store.json")
+        val c = controller(file)
+        c.startOrResume()
+        assertNotNull(c.addCapture("captures/id-0-1.jpg", "glasses"))
+        assertNotNull(c.mockCapture())
+
+        val s = controller(file).activeSession()!!
+        assertEquals(2, s.mediaReferences.size)
+        assertEquals("captures/id-0-1.jpg", s.mediaReferences.first())
+        assertTrue(s.observations.any { it.kind == ObservationKind.VISUAL_CAPTURE && it.text == "Photo captured from glasses." })
+
+        val summary = c.draftSummary(s)
+        assertTrue(summary, summary.contains("Photos: 1 captured, 1 mock placeholder(s)"))
+    }
+
+    @Test fun `capture with no active session records nothing`() {
+        val c = controller(File(tmp.root, "store.json"))
+        assertNull(c.addCapture("captures/x.jpg", "glasses"))
+    }
+
     @Test fun `corrupt store is set aside and reported, not silently lost`() {
         val file = File(tmp.root, "store.json").apply { writeText("{not json") }
         val c = controller(file)

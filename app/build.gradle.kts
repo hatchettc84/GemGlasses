@@ -41,7 +41,7 @@ android {
         buildConfigField("boolean", "USE_REAL_GLASSES", useRealGlasses.toString())
 
         manifestPlaceholders["metaApplicationId"] = secret("META_APPLICATION_ID", "0")
-        manifestPlaceholders["metaClientToken"] = secret("META_CLIENT_TOKEN", "")
+        manifestPlaceholders["metaClientToken"] = secret("META_CLIENT_TOKEN", "0")
     }
 
     buildTypes {
@@ -114,9 +114,10 @@ dependencies {
     implementation(libs.play.services.location)
     implementation(libs.androidx.datastore.preferences)
 
-    // Real Meta DAT SDK only linked when a github_token is present and the flag is on.
+    // Real Meta DAT SDK (Maven Central, no token needed) only linked when the flag is on.
     if (useRealGlasses) {
-        implementation(libs.meta.wearables.dat)
+        implementation(libs.meta.wearables.dat.core)
+        implementation(libs.meta.wearables.dat.camera)
     }
 
     testImplementation(libs.junit)

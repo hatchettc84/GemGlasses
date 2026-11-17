@@ -13,8 +13,8 @@ kotlinxSerialization = "1.7.3"
 coroutines = "1.9.0"
 playServicesLocation = "21.3.0"
 datastore = "1.1.1"
-# Meta Wearables Device Access Toolkit (GitHub Packages). Pin explicitly; the
-# artifact is only resolved when a github_token is configured (see settings.gradle.kts).
+# Meta Wearables Device Access Toolkit (Maven Central). Pin explicitly; only
+# resolved when building with -Pgemglasses.useRealGlasses=true.
 metaWearablesDat = "1.0.1"
 
 # Test

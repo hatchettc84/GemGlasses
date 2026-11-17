@@ -104,7 +104,7 @@ git clone https://github.com/lpecom/GemGlasses.git
 cd GemGlasses
 cp local.properties.example local.properties   # set sdk.dir, backend URL, app secret
 
-# Mock glasses backend is the default — no github_token or hardware needed
+# Mock glasses backend is the default — no hardware needed
 ./gradlew assembleDebug
 ./gradlew testDebugUnitTest
 ```
@@ -120,21 +120,26 @@ cp local.properties.example local.properties   # set sdk.dir, backend URL, app s
    npx wrangler deploy
    ```
    Put the deployed URL and the same app secret in `local.properties`.
-3. **Meta Wearables** — create an app at
-   [wearables.developer.meta.com](https://wearables.developer.meta.com), grab
-   the `APPLICATION_ID` / `CLIENT_TOKEN`, and add a classic GitHub PAT with
-   `read:packages` as `github_token` in `local.properties` (this unlocks the DAT
-   SDK from GitHub Packages), then build with the real backend enabled:
+3. **Developer Mode** — in the Meta AI app: *Settings → App Info → tap the
+   version 5×* to enable it, then force-stop Meta AI and pair your glasses.
+   With `META_APPLICATION_ID` / `META_CLIENT_TOKEN` unset (both default to `0`),
+   registration goes through Developer Mode. To register through a
+   [Wearables Developer Center](https://wearables.developer.meta.com) project
+   instead, set both in `local.properties` (portal registration is not yet
+   working for this project — it returns "Application data is currently
+   unavailable").
+4. Build and install onto your phone. `-Pgemglasses.useRealGlasses=true` links
+   the Meta DAT SDK (`com.meta.wearable:mwdat-core` / `mwdat-camera` 1.0.1 from
+   Maven Central — no credentials needed):
    ```bash
    ./gradlew installDebug -Pgemglasses.useRealGlasses=true
    ```
-4. **Developer Mode** — in the Meta AI app: *Settings → App Info → tap the
-   version 5×* to enable it, then pair your glasses.
-5. Build and install onto your phone (`-Pgemglasses.useRealGlasses=true` links
-   the DAT SDK):
-   ```bash
-   ./gradlew installDebug -Pgemglasses.useRealGlasses=true
-   ```
+5. **Connect** — open the app, allow *Nearby devices* (Bluetooth), then in
+   BobAI *Settings → Hardware* tap **Register with Meta AI** and approve it in
+   Meta AI, then **Allow glasses camera**. **Test glasses camera** runs a
+   10-second capture to confirm frames arrive (the first frame takes ~5 s).
+   If the session ends with "Your glasses need an update", update the glasses
+   from Meta AI's *App connections* page for the glasses.
 
 `local.properties.example` documents every field.
 

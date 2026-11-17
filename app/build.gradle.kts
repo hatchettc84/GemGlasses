@@ -71,7 +71,7 @@ android {
 
     // The real Meta DAT integration lives in its own source dir that is only
     // compiled when the SDK is linked. Hardware-free builds (mock backend) skip
-    // it entirely, so the project still compiles with no github_token.
+    // it entirely, so the project compiles without the SDK.
     sourceSets {
         getByName("main") {
             if (useRealGlasses) {

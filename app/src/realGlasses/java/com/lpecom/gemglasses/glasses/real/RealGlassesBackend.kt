@@ -171,7 +171,14 @@ class RealGlassesBackend(private val context: Context) : GlassesBackend {
             return@channelFlow
         }
         var camera: Camera? = null
-        launch { session.errors.collect { Log.w(TAG, "session error: ${it.description}") } }
+        // Session and stream errors are terminal for this capture: end the flow
+        // right away so callers can retry instead of waiting out their timeout.
+        launch {
+            session.errors.collect {
+                Log.w(TAG, "session error: ${it.description}")
+                close()
+            }
+        }
         launch {
             session.state.collect { state ->
                 Log.i(TAG, "session: $state")
@@ -180,7 +187,12 @@ class RealGlassesBackend(private val context: Context) : GlassesBackend {
                         .onSuccess { cam ->
                             camera = cam
                             launch { cam.stream.state.collect { Log.i(TAG, "stream: $it") } }
-                            launch { cam.stream.errorStream.collect { Log.w(TAG, "stream error: ${it.description}") } }
+                            launch {
+                                cam.stream.errorStream.collect {
+                                    Log.w(TAG, "stream error: ${it.description}")
+                                    close()
+                                }
+                            }
                             launch {
                                 var seen = 0
                                 cam.stream.videoStream.collect { frame ->

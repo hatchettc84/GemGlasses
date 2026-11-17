@@ -1,5 +1,14 @@
 package com.lpecom.gemglasses.bobai.ui
 
+import com.lpecom.gemglasses.bobai.data.isMockPhoto
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.runtime.produceState
+import androidx.compose.foundation.Image
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.StatFs
 import androidx.compose.foundation.BorderStroke
@@ -295,6 +304,15 @@ fun AssistantScreen(vm: BobAiViewModel, nav: NavHostController) {
                 session.equipment?.let { StatusChip(it.model + " confirmed", Tone.OK) }
             }
         }
+        if (vm.capturing) {
+            Surface(color = MaterialTheme.colorScheme.primary, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Glasses camera on — capturing one photo. It turns off when the photo is saved.",
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.padding(8.dp),
+                )
+            }
+        }
         if (paused) {
             Surface(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth()) {
                 Text("Guidance paused. Nothing will advance until you resume.", color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(8.dp))
@@ -311,7 +329,7 @@ fun AssistantScreen(vm: BobAiViewModel, nav: NavHostController) {
             Row(Modifier.fillMaxWidth().padding(8.dp)) {
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SecondaryAction(if (paused) "Resume" else "Pause", { vm.controller.setPaused(!paused) })
-                    SecondaryAction("Capture (mock)", { vm.controller.mockCapture() })
+                    SecondaryAction(captureLabel(vm), { vm.capture() }, enabled = !vm.capturing)
                 }
                 Spacer(Modifier.width(HINGE_GAP))
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
@@ -351,11 +369,10 @@ private fun WorkflowPane(vm: BobAiViewModel, nav: NavHostController, session: Se
         if (!expanded) {
             item {
                 SectionCard("Camera") {
-                    Text(
-                        if (session.mediaReferences.isEmpty()) "No image captured. Camera is off unless you capture."
-                        else "Last capture: ${session.mediaReferences.last()} (mock placeholder)",
-                    )
-                    SecondaryAction("Capture (mock)", { c.mockCapture() })
+                    val last = session.mediaReferences.lastOrNull()
+                    if (last == null) Text("No image captured. Camera is off unless you capture.")
+                    else CapturedPhoto(vm, last)
+                    SecondaryAction(captureLabel(vm), { vm.capture() }, enabled = !vm.capturing)
                 }
             }
         }
@@ -481,7 +498,9 @@ private fun ControlBar(vm: BobAiViewModel, session: Session, onEnd: () -> Unit) 
                 val e = c.engine(session); val ps = session.procedureState
                 vm.message = if (e != null && ps != null) e.current(ps).instruction else "No current step to repeat."
             }, modifier = mod, contentPadding = pad) { Text("Repeat", maxLines = 1, overflow = TextOverflow.Clip) }
-            OutlinedButton(onClick = { c.mockCapture() }, modifier = mod, contentPadding = pad) { Text("Capture", maxLines = 1, overflow = TextOverflow.Clip) }
+            OutlinedButton(onClick = { vm.capture() }, enabled = !vm.capturing, modifier = mod, contentPadding = pad) {
+                Text(if (vm.capturing) "Capturing…" else "Capture", maxLines = 1, overflow = TextOverflow.Clip)
+            }
             Button(onClick = onEnd, modifier = mod, contentPadding = pad, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("End", maxLines = 1) }
         }
     }
@@ -511,7 +530,7 @@ private fun ReferencePane(vm: BobAiViewModel, session: Session) {
             }
             1 -> ScrollPage {
                 if (session.mediaReferences.isEmpty()) Text("No photos in this session. Capture requires an explicit tap.")
-                session.mediaReferences.forEach { Text("• $it (mock placeholder)") }
+                session.mediaReferences.asReversed().forEach { CapturedPhoto(vm, it) }
             }
             else -> ScrollPage {
                 val notes = session.observations.filter { it.kind == ObservationKind.TECHNICIAN_REPORT }
@@ -849,3 +868,34 @@ fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
 
 @Composable
 private fun <T> remember(key: Any?, calc: () -> T): T = androidx.compose.runtime.remember(key) { calc() }
+
+private fun captureLabel(vm: BobAiViewModel): String = when {
+    vm.capturing -> "Capturing…"
+    BuildConfig.USE_REAL_GLASSES -> "Capture"
+    else -> "Capture (mock)"
+}
+
+/** One job photo: the saved image, or a clear label for mock placeholders and missing files. */
+@Composable
+private fun CapturedPhoto(vm: BobAiViewModel, ref: String) {
+    if (isMockPhoto(ref)) {
+        Text("• $ref (mock placeholder)")
+        return
+    }
+    val image by produceState<Pair<Boolean, ImageBitmap?>>(false to null, ref) {
+        value = true to withContext(Dispatchers.IO) {
+            BitmapFactory.decodeFile(vm.captureFile(ref).path)?.asImageBitmap()
+        }
+    }
+    val (loaded, bitmap) = image
+    when {
+        bitmap != null -> Image(
+            bitmap = bitmap,
+            contentDescription = "Photo captured from the glasses",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+        )
+        loaded -> Text("Photo file missing on this device: ${ref.substringAfterLast('/')}")
+        else -> Text("Loading photo…")
+    }
+}

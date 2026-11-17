@@ -240,11 +240,21 @@ class BobAiController(
 
     /** Mock capture: records an explicit, user-initiated photo reference. No camera is used. */
     fun mockCapture(): String? {
-        val ref = "mock-photo-${now()}"
+        val ref = "$MOCK_PHOTO_PREFIX${now()}"
         return updateActive {
             it.copy(mediaReferences = it.mediaReferences + ref)
                 .log(Observation(ObservationKind.VISUAL_CAPTURE, "Photo captured (mock placeholder — no camera used).", now()))
         }?.let { ref }
+    }
+
+    /**
+     * Records a real photo the technician explicitly captured. [ref] is the
+     * image's path relative to app storage. Returns the updated session, or
+     * null when no session is active (the caller should discard the file).
+     */
+    fun addCapture(ref: String, source: String): Session? = updateActive {
+        it.copy(mediaReferences = it.mediaReferences + ref)
+            .log(Observation(ObservationKind.VISUAL_CAPTURE, "Photo captured from $source.", now()))
     }
 
     fun endSession(): Session? {
@@ -286,7 +296,13 @@ class BobAiController(
             appendLine("Sources cited:")
             sources.forEach { appendLine("• ${it.label()}") }
         }
-        if (s.mediaReferences.isNotEmpty()) appendLine("\nPhotos: ${s.mediaReferences.size} (mock)")
+        val (mockPhotos, realPhotos) = s.mediaReferences.partition { isMockPhoto(it) }
+        if (realPhotos.isNotEmpty() || mockPhotos.isNotEmpty()) {
+            appendLine()
+            append("Photos: ${realPhotos.size} captured")
+            if (mockPhotos.isNotEmpty()) append(", ${mockPhotos.size} mock placeholder(s)")
+            appendLine()
+        }
     }.trim()
 
     // ---- packs (simulated; no network transfer happens) --------------------
@@ -304,3 +320,8 @@ class BobAiController(
         }
     }
 }
+
+const val MOCK_PHOTO_PREFIX = "mock-photo-"
+
+/** True for placeholder references made by [BobAiController.mockCapture]. */
+fun isMockPhoto(ref: String): Boolean = ref.startsWith(MOCK_PHOTO_PREFIX)

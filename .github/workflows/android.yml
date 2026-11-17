@@ -21,7 +21,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # No Meta DAT SDK / github_token in CI: build against the mock glasses
+      # No Meta DAT SDK or hardware in CI: build against the mock glasses
       # backend so the pipeline needs no secrets or hardware.
       - name: Unit tests (mock backend)
         run: ./gradlew testDebugUnitTest -Pgemglasses.useRealGlasses=false

@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -29,6 +30,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /** Truthful glasses status. Mock builds never claim real hardware is connected. */
@@ -103,7 +107,7 @@ class BobAiViewModel @Inject constructor(
             try {
                 val jpeg = grabGlassesFrame()
                 if (jpeg == null) {
-                    message = "No image from the glasses. Nothing was saved — try again."
+                    message = "No image from the glasses. Nothing was saved — check they're on and awake, then try again."
                     return@launch
                 }
                 val ref = "$CAPTURE_DIR/${session.id}-${System.currentTimeMillis()}.jpg"
@@ -131,11 +135,26 @@ class BobAiViewModel @Inject constructor(
      * Opens the glasses camera for one capture. The first frame arrives about
      * 5 s after the stream starts; keeping the second frame gives the camera a
      * moment to settle exposure. The stream closes as soon as it returns.
+     *
+     * The first stream after the glasses have been idle sometimes fails while
+     * their link reconnects, so a capture that gets no frame is retried once.
      */
     private suspend fun grabGlassesFrame(): ByteArray? {
-        var last: ByteArray? = null
-        cameraSource.runBurst(maxDurationMs = 15_000, maxFrames = 2) { last = it }
-        return last
+        repeat(CAPTURE_ATTEMPTS) { attempt ->
+            var last: ByteArray? = null
+            cameraSource.runBurst(maxDurationMs = 15_000, maxFrames = 2) { last = it }
+            last?.let { return it }
+            if (attempt < CAPTURE_ATTEMPTS - 1) {
+                Log.i(TAG, "glasses capture got no frame; retrying once the glasses reconnect")
+                message = "Glasses camera reconnecting — retrying…"
+                // After a stream error the glasses drop off for a moment and
+                // reconnect; retrying during that gap fails instantly.
+                delay(RECONNECT_SETTLE_MS)
+                val reconnected = withTimeoutOrNull(RECONNECT_TIMEOUT_MS) { glasses.first { it.ok } }
+                if (reconnected == null) return null
+            }
+        }
+        return null
     }
 
     val snapshot: StateFlow<StoreSnapshot> = controller.state
@@ -206,5 +225,9 @@ class BobAiViewModel @Inject constructor(
 
     private companion object {
         const val CAPTURE_DIR = "captures"
+        const val CAPTURE_ATTEMPTS = 2
+        const val RECONNECT_SETTLE_MS = 1_500L
+        const val RECONNECT_TIMEOUT_MS = 8_000L
+        const val TAG = "BobAiViewModel"
     }
 }

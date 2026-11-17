@@ -1,7 +1,13 @@
 package com.lpecom.gemglasses
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
@@ -37,8 +43,22 @@ import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    // The Meta DAT SDK finds the glasses through bonded Bluetooth devices,
+    // which needs BLUETOOTH_CONNECT at runtime (API 31+). Mock builds skip it.
+    private val bluetoothRequest =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            Log.i("MainActivity", "BLUETOOTH_CONNECT granted=$granted")
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (BuildConfig.USE_REAL_GLASSES &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) {
+            bluetoothRequest.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        }
         enableEdgeToEdge()
         setContent {
             // BobAI is the launcher UI. The original GemGlasses (Gemini Live) screens

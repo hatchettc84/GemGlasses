@@ -16,6 +16,7 @@ import com.lpecom.gemglasses.bobai.data.BobAiController
 import com.lpecom.gemglasses.bobai.data.StoreSnapshot
 import com.lpecom.gemglasses.bobai.domain.ModeResolver
 import com.lpecom.gemglasses.bobai.domain.ModeStatus
+import com.lpecom.gemglasses.glasses.GlassesCameraSource
 import com.lpecom.gemglasses.glasses.GlassesManager
 import com.lpecom.gemglasses.glasses.RegistrationState
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /** Truthful glasses status. Mock builds never claim real hardware is connected. */
@@ -33,8 +35,40 @@ data class GlassesStatus(val label: String, val detail: String, val ok: Boolean)
 class BobAiViewModel @Inject constructor(
     application: Application,
     val controller: BobAiController,
-    glassesManager: GlassesManager,
+    private val glassesManager: GlassesManager,
+    private val cameraSource: GlassesCameraSource,
 ) : AndroidViewModel(application) {
+
+    /**
+     * Hardware check: runs a 5-second camera burst, saves the first frame to
+     * app storage (files/glasses_test.jpg) and reports how many frames arrived.
+     */
+    fun testGlassesCamera() {
+        viewModelScope.launch {
+            message = "Testing glasses camera…"
+            var first: ByteArray? = null
+            val count = cameraSource.runBurst(maxDurationMs = 10_000, maxFrames = 10) { jpeg ->
+                if (first == null) first = jpeg
+            }
+            val saved = first?.let { bytes ->
+                java.io.File(getApplication<Application>().filesDir, "glasses_test.jpg").writeBytes(bytes)
+                bytes.size
+            }
+            message = if (saved != null) "Glasses camera: $count frame(s), first ${saved / 1024} KB saved."
+            else "Glasses camera: no frames received."
+        }
+    }
+
+    /** Opens the Meta AI app to connect BobAI to the glasses. */
+    fun registerGlasses() = glassesManager.startRegistration()
+
+    /** Asks Meta AI for glasses camera access and reports the outcome. */
+    fun requestGlassesCamera() {
+        viewModelScope.launch {
+            val granted = glassesManager.ensureCameraPermission()
+            message = if (granted) "Glasses camera allowed." else "Glasses camera not allowed."
+        }
+    }
 
     val snapshot: StateFlow<StoreSnapshot> = controller.state
 

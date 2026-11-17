@@ -811,6 +811,11 @@ fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
                 StatusChip(glasses.label, if (glasses.ok) Tone.OK else Tone.WARN)
                 Text(glasses.detail)
                 Text("Glasses backend: ${if (BuildConfig.USE_REAL_GLASSES) "Meta DAT SDK" else "Mock (built with gemglasses.useRealGlasses=false)"}")
+                if (BuildConfig.USE_REAL_GLASSES) {
+                    if (!glasses.ok) SecondaryAction("Register with Meta AI", { vm.registerGlasses() })
+                    SecondaryAction("Allow glasses camera", { vm.requestGlassesCamera() })
+                    if (glasses.ok) SecondaryAction("Test glasses camera", { vm.testGlassesCamera() })
+                }
                 Text("Glasses camera/audio in BobAI workflows: not wired yet (Phase 2, needs hardware testing).", style = MaterialTheme.typography.bodySmall)
             }
             SectionCard("Assistant and inference") {

@@ -17,6 +17,12 @@ import com.lpecom.gemglasses.bobai.data.BobAiController
 import com.lpecom.gemglasses.bobai.data.StoreSnapshot
 import com.lpecom.gemglasses.bobai.domain.ModeResolver
 import com.lpecom.gemglasses.bobai.domain.ModeStatus
+import com.lpecom.gemglasses.bobai.live.AssistanceFacts
+import com.lpecom.gemglasses.bobai.live.AssistanceModes
+import com.lpecom.gemglasses.bobai.live.MediaStatus
+import com.lpecom.gemglasses.bobai.live.ModeAvailability
+import com.lpecom.gemglasses.bobai.workmode.WorkModeController
+import com.lpecom.gemglasses.bobai.workmode.WorkModeState
 import com.lpecom.gemglasses.glasses.GlassesCameraSource
 import com.lpecom.gemglasses.glasses.GlassesManager
 import com.lpecom.gemglasses.glasses.RegistrationState
@@ -44,6 +50,7 @@ class BobAiViewModel @Inject constructor(
     val controller: BobAiController,
     private val glassesManager: GlassesManager,
     private val cameraSource: GlassesCameraSource,
+    val workMode: WorkModeController,
 ) : AndroidViewModel(application) {
 
     /**
@@ -185,6 +192,24 @@ class BobAiViewModel @Inject constructor(
                 }
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, GlassesStatus("Glasses status unknown", "Checking…", false))
+
+    val workModeState: StateFlow<WorkModeState> = workMode.state
+
+    /** Addendum §5 assistance modes, from facts only. */
+    val assistanceModes: StateFlow<List<ModeAvailability>> =
+        combine(_online, controller.state, glasses) { net, s, g ->
+            val now = System.currentTimeMillis()
+            AssistanceModes.resolve(
+                AssistanceFacts(
+                    online = net,
+                    glassesConnected = g.ok,
+                    usableReferencePacks = s.packs.count { it.isUsable(now) },
+                ),
+            )
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Camera media status. Nothing is ever sent to an AI or recorded yet. */
+    val mediaStatus: MediaStatus get() = if (capturing) MediaStatus.LOCAL_CAPTURE else MediaStatus.CAMERA_OFF
 
     // UI state that must survive fold/unfold (configuration change) — held here, not in composables.
     var draftInput by mutableStateOf("")

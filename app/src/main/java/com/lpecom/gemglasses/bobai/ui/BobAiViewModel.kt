@@ -69,6 +69,9 @@ class BobAiViewModel @Inject constructor(
     /** Opens the Meta AI app to connect BobAI to the glasses. */
     fun registerGlasses() = glassesManager.startRegistration()
 
+    /** Opens the Meta AI app to remove BobAI's glasses registration. */
+    fun unregisterGlasses() = glassesManager.startUnregistration()
+
     /** Asks Meta AI for glasses camera access and reports the outcome. */
     fun requestGlassesCamera() {
         viewModelScope.launch {

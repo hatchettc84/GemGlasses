@@ -25,6 +25,8 @@ class GlassesManager @Inject constructor(
 
     fun startRegistration() = backend.startRegistration()
 
+    fun startUnregistration() = backend.startUnregistration()
+
     suspend fun cameraPermission(): CameraPermission = backend.cameraPermission()
 
     suspend fun ensureCameraPermission(): Boolean =

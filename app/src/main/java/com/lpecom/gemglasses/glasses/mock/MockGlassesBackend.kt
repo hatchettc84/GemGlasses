@@ -39,6 +39,10 @@ class MockGlassesBackend : GlassesBackend {
         _registration.value = RegistrationState.REGISTERED
     }
 
+    override fun startUnregistration() {
+        _registration.value = RegistrationState.NOT_REGISTERED
+    }
+
     override suspend fun cameraPermission() = CameraPermission.GRANTED
 
     override suspend fun requestCameraPermission() = CameraPermission.GRANTED

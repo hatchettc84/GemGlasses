@@ -114,6 +114,15 @@ class RealGlassesBackend(private val context: Context) : GlassesBackend {
         Wearables.startRegistration(activity)
     }
 
+    override fun startUnregistration() {
+        val activity = currentActivity?.get()
+        if (activity == null) {
+            Log.w(TAG, "startUnregistration: no foreground activity")
+            return
+        }
+        Wearables.startUnregistration(activity)
+    }
+
     override suspend fun cameraPermission(): CameraPermission =
         Wearables.checkPermissionStatus(Permission.CAMERA).fold(
             { status -> if (status == PermissionStatus.Granted) CameraPermission.GRANTED else CameraPermission.DENIED },

@@ -34,6 +34,9 @@ interface GlassesBackend {
     /** Kick off registration with the Meta AI app (opens its flow). */
     fun startRegistration()
 
+    /** Remove this app's registration in the Meta AI app (opens its flow). */
+    fun startUnregistration()
+
     suspend fun cameraPermission(): CameraPermission
 
     /** Request the glasses camera permission; returns the resulting state. */

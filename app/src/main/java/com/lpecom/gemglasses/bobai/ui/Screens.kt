@@ -1,17 +1,10 @@
 package com.lpecom.gemglasses.bobai.ui
 
-import com.lpecom.gemglasses.bobai.data.isMockPhoto
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.runtime.produceState
-import androidx.compose.foundation.Image
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.StatFs
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,10 +12,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -32,8 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -41,6 +35,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -55,10 +51,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -67,12 +68,14 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.lpecom.gemglasses.BuildConfig
 import com.lpecom.gemglasses.bobai.data.MockContent
+import com.lpecom.gemglasses.bobai.data.isMockPhoto
 import com.lpecom.gemglasses.bobai.domain.ApprovalStatus
 import com.lpecom.gemglasses.bobai.domain.DocAvailability
 import com.lpecom.gemglasses.bobai.domain.EquipmentResolver
@@ -86,6 +89,8 @@ import com.lpecom.gemglasses.bobai.domain.SessionStatus
 import com.lpecom.gemglasses.bobai.domain.SourceDocument
 import com.lpecom.gemglasses.bobai.domain.StepResult
 import com.lpecom.gemglasses.bobai.domain.SyncState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
 
@@ -113,7 +118,7 @@ private fun SplitPanes(left: @Composable () -> Unit, right: @Composable () -> Un
 private val HINGE_GAP = 24.dp
 
 // =========================================================================
-// Home
+// Home — Field Dispatch & Industrial Command Console
 // =========================================================================
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -122,6 +127,7 @@ fun HomeScreen(vm: BobAiViewModel, nav: NavHostController) {
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
     val mode by vm.mode.collectAsStateWithLifecycle()
     val glasses by vm.glasses.collectAsStateWithLifecycle()
+    val brand = LocalIndustrialBrand.current
     val active = vm.controller.activeSession()
     val activeJob = active?.let { vm.controller.job(it.jobId) }
     val now = System.currentTimeMillis()
@@ -133,42 +139,122 @@ fun HomeScreen(vm: BobAiViewModel, nav: NavHostController) {
     }
 
     val ready: @Composable () -> Unit = {
-        SectionCard("Ready for a service call?") {
+        SectionCard(
+            title = "Ready for a service call?",
+            trailingHeader = {
+                TechnicalBadge("OPS", if (active == null) "STANDBY" else "ACTIVE")
+            },
+        ) {
             PrimaryAction(if (active == null) "Start assistant" else "Resume current job", { start() })
-            if (active == null) Text("Starts an unassigned session. Camera and microphone stay off.", style = MaterialTheme.typography.bodyMedium)
-        }
-        SectionCard("Current job") {
             if (active == null) {
-                Text("No active job.")
+                Text(
+                    "Starts an unassigned session. Camera and microphone stay off.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        SectionCard(
+            title = "Current job",
+            accentTone = if (active != null) Tone.OK else Tone.NEUTRAL,
+            trailingHeader = {
+                if (activeJob != null) {
+                    TechnicalBadge("WO#", activeJob.id.takeLast(8).uppercase())
+                }
+            },
+        ) {
+            if (active == null) {
+                Text("No active job.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
-                Text(activeJob?.site ?: "Unassigned session", style = MaterialTheme.typography.bodyLarge)
-                Text("Equipment: " + (active.equipment?.let { "${it.model} — confirmed" } ?: "Not confirmed"))
+                Text(
+                    activeJob?.site ?: "Unassigned session",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    TechnicalBadge("ASSET", active.equipment?.model ?: "UNCONFIRMED")
+                    active.equipment?.serial?.takeIf { it.isNotBlank() }?.let { sn ->
+                        TechnicalBadge("S/N", sn)
+                    }
+                    StatusChip(
+                        "Equipment: " + (active.equipment?.let { "${it.model} — confirmed" } ?: "Not confirmed"),
+                        if (active.equipment?.isConfirmed == true) Tone.OK else Tone.WARN,
+                    )
+                }
                 SecondaryAction("Open job", { nav.navigate(Routes.job(active.jobId)) })
             }
         }
+        SectionCard(
+            title = "Enterprise OEM / MRO Partner Profile",
+            trailingHeader = { TechnicalBadge("SKIN", brand.badgeCode) },
+        ) {
+            Text(
+                "Switch industrial visual profile (Grainger MRO, DeWalt SiteManager, Milwaukee ONE-KEY, or BobAI Core):",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            BrandProfileSelector()
+        }
     }
     val tools: @Composable () -> Unit = {
-        SectionCard("Quick actions") {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionCard(
+            title = "Quick actions",
+            trailingHeader = { TechnicalBadge("FIELD", "4 TOOLS") },
+        ) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 SecondaryAction("Identify", { vm.controller.startOrResume(); nav.navigate(Routes.EQUIPMENT) })
                 SecondaryAction("Troubleshoot", { start() })
                 SecondaryAction("Find manual", { nav.goTop(Routes.LIBRARY) })
                 SecondaryAction("Capture note", { start(Routes.ASSISTANT) })
             }
         }
-        SectionCard("Offline readiness") {
-            StatusChip(
-                if (usablePacks > 0) "References ready ($usablePacks pack${if (usablePacks == 1) "" else "s"})" else "No usable references",
-                if (usablePacks > 0) Tone.OK else Tone.BAD,
-            )
-            StatusChip("Offline AI not configured", Tone.NEUTRAL)
-            mode.unavailable.forEach { Text("• Unavailable: $it", style = MaterialTheme.typography.bodyMedium) }
+        SectionCard(
+            title = "Offline readiness",
+            accentTone = if (usablePacks > 0) Tone.OK else Tone.BAD,
+            trailingHeader = { TechnicalBadge("CACHE", "$usablePacks/${snapshot.packs.size} PACKS") },
+        ) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                StatusChip(
+                    if (usablePacks > 0) "References ready ($usablePacks pack${if (usablePacks == 1) "" else "s"})" else "No usable references",
+                    if (usablePacks > 0) Tone.OK else Tone.BAD,
+                )
+                StatusChip("Offline AI not configured", Tone.NEUTRAL)
+            }
+            mode.unavailable.forEach {
+                Text(
+                    "• Unavailable: $it",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             SecondaryAction("Manage downloads", { nav.navigate(Routes.DOWNLOADS) })
         }
     }
 
     ScrollPage {
-        Text("BobAI", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("BobAI", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+                Text(
+                    "${brand.displayName} · Industrial Field Console",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TechnicalBadge("TENANT", MockContent.TENANT.uppercase())
+        }
         StatusStrip(glasses, mode)
         if (LocalExpanded.current) {
             Row(horizontalArrangement = Arrangement.spacedBy(HINGE_GAP)) {
@@ -183,9 +269,10 @@ fun HomeScreen(vm: BobAiViewModel, nav: NavHostController) {
 }
 
 // =========================================================================
-// Equipment confirmation
+// Equipment confirmation — Industrial Nameplate & Rating Plate Verification
 // =========================================================================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EquipmentScreen(vm: BobAiViewModel, nav: NavHostController) {
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
@@ -200,67 +287,158 @@ fun EquipmentScreen(vm: BobAiViewModel, nav: NavHostController) {
     var error by rememberSaveable { mutableStateOf<String?>(null) }
 
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Confirm equipment", onBack = { nav.popBackStack() })
+        ScreenHeader("Confirm equipment", onBack = { nav.popBackStack() }) {
+            TechnicalBadge("STEP 1", "ASSET VERIFY")
+            Spacer(Modifier.width(8.dp))
+        }
         ScrollPage {
             if (session == null) {
                 Text("No active session.")
                 PrimaryAction("Start a session", { vm.controller.startOrResume() })
                 return@ScrollPage
             }
-            SectionCard("Label photo (mock)") {
-                Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
-                    Text(label, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(16.dp))
+            SectionCard(
+                title = "Label photo (mock)",
+                trailingHeader = { TechnicalBadge("OCR", "SIMULATED") },
+            ) {
+                // Machined Rating Plate Visual Simulator
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(2.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)),
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "EQUIPMENT RATING PLATE · STAMPED METAL",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                "● REV-SPEC",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
+                        Text(
+                            label,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                    }
                 }
-                Text("No camera was used. Real label capture and OCR are not implemented yet.", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "No camera was used. Real label capture and OCR are not implemented yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
                         .toggleable(value = smudged, role = Role.Switch, onValueChange = { smudged = it }),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Switch(checked = smudged, onCheckedChange = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Simulate a hard-to-read label")
+                    Spacer(Modifier.width(10.dp))
+                    Text("Simulate a hard-to-read label", fontWeight = FontWeight.Medium)
                 }
             }
-            SectionCard("Extracted candidates") {
+            SectionCard(
+                title = "Extracted candidates",
+                accentTone = if (ambiguous) Tone.WARN else Tone.OK,
+                trailingHeader = { TechnicalBadge("MATCHES", "${candidates.size}") },
+            ) {
                 if (ambiguous) {
                     StatusChip("Ambiguous model — choose or type the exact model", Tone.WARN)
                 }
                 candidates.forEach { c ->
                     OutlinedButton(
                         onClick = { model = c.model; serial = c.serial ?: serial; error = null },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    ) { Text("${c.model}  ·  ${c.source}") }
+                        shape = MaterialTheme.shapes.small,
+                        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+                    ) {
+                        Text(
+                            "${c.model}  ·  ${c.source}",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.ExtraBold,
+                        )
+                    }
                 }
-                Text("Selecting a candidate only fills the fields. Nothing is confirmed until you tap Confirm.", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Selecting a candidate only fills the fields. Nothing is confirmed until you tap Confirm.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            SectionCard("Model and serial") {
-                OutlinedTextField(model, { model = it; error = null }, label = { Text("Model number") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(serial, { serial = it }, label = { Text("Serial number (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            SectionCard(
+                title = "Model and serial",
+                trailingHeader = { TechnicalBadge("GATE", "HUMAN CONFIRM") },
+            ) {
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = { model = it; error = null },
+                    label = { Text("Model number") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = serial,
+                    onValueChange = { serial = it },
+                    label = { Text("Serial number (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 if (model.isNotBlank()) {
                     val known = vm.controller.resolver.isKnownModel(model)
+                    val normalized = vm.controller.resolver.normalizeModel(model)
                     StatusChip(
-                        if (known) "Known model: ${MockContent.knownModels[vm.controller.resolver.normalizeModel(model)]}"
+                        if (known) "Known model: ${MockContent.knownModels[normalized]}"
                         else "Unknown model — no approved manual. Reference-only or escalate.",
                         if (known) Tone.OK else Tone.WARN,
                     )
-                }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                PrimaryAction("Confirm this is the equipment", {
-                    when (val r = vm.controller.confirmEquipment(model, serial)) {
-                        is EquipmentResolver.Confirmation.Confirmed -> {
-                            nav.navigate(Routes.ASSISTANT) { popUpTo(Routes.EQUIPMENT) { inclusive = true } }
+                    if (known) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            TechnicalBadge("OEM", MockContent.knownModels[normalized] ?: "—")
+                            TechnicalBadge("SKU/CAT", "MRO-${normalized}")
+                            TechnicalBadge("VOLTAGE", "120V 60Hz")
                         }
-                        is EquipmentResolver.Confirmation.Rejected -> error = r.reason
                     }
-                }, enabled = model.isNotBlank())
+                }
+                error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+                PrimaryAction(
+                    "Confirm this is the equipment",
+                    {
+                        when (val r = vm.controller.confirmEquipment(model, serial)) {
+                            is EquipmentResolver.Confirmation.Confirmed -> {
+                                nav.navigate(Routes.ASSISTANT) { popUpTo(Routes.EQUIPMENT) { inclusive = true } }
+                            }
+                            is EquipmentResolver.Confirmation.Rejected -> error = r.reason
+                        }
+                    },
+                    enabled = model.isNotBlank(),
+                )
             }
         }
     }
 }
 
 // =========================================================================
-// Assistant
+// Assistant — Dual-Pane Tactical Troubleshooting & LOTO Procedure Workstation
 // =========================================================================
 
 @Composable
@@ -293,13 +471,25 @@ fun AssistantScreen(vm: BobAiViewModel, nav: NavHostController) {
         val expandedLayout = LocalExpanded.current
         ScreenHeader("Assistant", onBack = { nav.popBackStack() }) {
             if (expandedLayout) {
+                session.equipment?.let {
+                    TechnicalBadge("MODEL", it.model)
+                    Spacer(Modifier.width(8.dp))
+                }
                 StatusChip(mode.mode.label, mode.tone())
                 Spacer(Modifier.width(8.dp))
             }
-            TextButton(onClick = { vm.controller.setPaused(!paused) }) { Text(if (paused) "Resume" else "Pause") }
+            TextButton(onClick = { vm.controller.setPaused(!paused) }) {
+                Text(if (paused) "Resume" else "Pause", fontWeight = FontWeight.ExtraBold)
+            }
         }
         if (!expandedLayout) {
-            Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 StatusChip(mode.mode.label, mode.tone())
                 session.equipment?.let { StatusChip(it.model + " confirmed", Tone.OK) }
             }
@@ -309,13 +499,19 @@ fun AssistantScreen(vm: BobAiViewModel, nav: NavHostController) {
                 Text(
                     "Glasses camera on — capturing one photo. It turns off when the photo is saved.",
                     color = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.padding(8.dp),
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(10.dp),
                 )
             }
         }
         if (paused) {
             Surface(color = MaterialTheme.colorScheme.tertiary, modifier = Modifier.fillMaxWidth()) {
-                Text("Guidance paused. Nothing will advance until you resume.", color = MaterialTheme.colorScheme.background, modifier = Modifier.padding(8.dp))
+                Text(
+                    "Guidance paused. Nothing will advance until you resume.",
+                    color = MaterialTheme.colorScheme.onTertiary,
+                    fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.padding(10.dp),
+                )
             }
         }
         if (LocalExpanded.current) {
@@ -325,18 +521,34 @@ fun AssistantScreen(vm: BobAiViewModel, nav: NavHostController) {
                     right = { ReferencePane(vm, session) },
                 )
             }
-            // Bottom actions grouped away from the hinge.
-            Row(Modifier.fillMaxWidth().padding(8.dp)) {
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SecondaryAction(if (paused) "Resume" else "Pause", { vm.controller.setPaused(!paused) })
-                    SecondaryAction(captureLabel(vm), { vm.capture() }, enabled = !vm.capturing)
-                }
-                Spacer(Modifier.width(HINGE_GAP))
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                    SecondaryAction("Save draft", {
-                        vm.controller.addNote(vm.draftInput); vm.draftInput = ""; vm.message = "Saved on this device."
-                    })
-                    Button(onClick = endSession, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), modifier = Modifier.heightIn(min = 48.dp)) { Text("End session") }
+            // Bottom actions grouped away from the hinge (Fold7 ergonomic split).
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(Modifier.fillMaxWidth().padding(10.dp)) {
+                    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SecondaryAction(if (paused) "Resume" else "Pause", { vm.controller.setPaused(!paused) })
+                        SecondaryAction(captureLabel(vm), { vm.capture() }, enabled = !vm.capturing)
+                    }
+                    Spacer(Modifier.width(HINGE_GAP))
+                    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                        SecondaryAction("Save draft", {
+                            vm.controller.addNote(vm.draftInput); vm.draftInput = ""; vm.message = "Saved on this device."
+                        })
+                        Button(
+                            onClick = endSession,
+                            shape = MaterialTheme.shapes.small,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                            modifier = Modifier.heightIn(min = 48.dp),
+                        ) {
+                            Text("End session", fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
                 }
             }
         } else {
@@ -348,27 +560,61 @@ fun AssistantScreen(vm: BobAiViewModel, nav: NavHostController) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun WorkflowPane(vm: BobAiViewModel, nav: NavHostController, session: Session, listState: LazyListState, expanded: Boolean) {
+private fun WorkflowPane(
+    vm: BobAiViewModel,
+    nav: NavHostController,
+    session: Session,
+    listState: LazyListState,
+    expanded: Boolean,
+) {
     val c = vm.controller
     val procedure = c.procedureFor(session)
     val engine = c.engine(session)
     val ps = session.procedureState
 
-    LazyColumn(state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(
+        state = listState,
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         item {
-            SectionCard("Equipment") {
+            SectionCard(
+                title = "Equipment",
+                accentTone = if (session.equipment?.isConfirmed == true) Tone.OK else Tone.WARN,
+                trailingHeader = {
+                    session.equipment?.serial?.takeIf { it.isNotBlank() }?.let {
+                        TechnicalBadge("S/N", it)
+                    }
+                },
+            ) {
                 val eq = session.equipment
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(eq?.model ?: "Not confirmed", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                    StatusChip(if (eq?.isConfirmed == true) "Confirmed" else "Not confirmed", if (eq?.isConfirmed == true) Tone.OK else Tone.WARN)
+                    Text(
+                        eq?.model ?: "Not confirmed",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f),
+                    )
+                    StatusChip(
+                        if (eq?.isConfirmed == true) "Confirmed" else "Not confirmed",
+                        if (eq?.isConfirmed == true) Tone.OK else Tone.WARN,
+                    )
                 }
-                eq?.manufacturer?.let { Text(it) }
-                SecondaryAction(if (eq == null) "Confirm equipment" else "Correct equipment", { nav.navigate(Routes.EQUIPMENT) })
+                eq?.manufacturer?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                SecondaryAction(
+                    if (eq == null) "Confirm equipment" else "Correct equipment",
+                    { nav.navigate(Routes.EQUIPMENT) },
+                )
             }
         }
         if (!expanded) {
             item {
-                SectionCard("Camera") {
+                SectionCard(
+                    title = "Camera",
+                    trailingHeader = { TechnicalBadge("MEDIA", "${session.mediaReferences.size} SAVED") },
+                ) {
                     val last = session.mediaReferences.lastOrNull()
                     if (last == null) Text("No image captured. Camera is off unless you capture.")
                     else CapturedPhoto(vm, last)
@@ -377,7 +623,25 @@ private fun WorkflowPane(vm: BobAiViewModel, nav: NavHostController, session: Se
             }
         }
         item {
-            SectionCard("Current step") {
+            val stepTone = when {
+                ps != null && engine != null && engine.prerequisitesMet(ps) -> when (engine.current(ps).kind) {
+                    NodeKind.STOP -> Tone.BAD
+                    NodeKind.COMPLETE -> Tone.OK
+                    NodeKind.STEP -> Tone.OK
+                }
+                else -> Tone.WARN
+            }
+            SectionCard(
+                title = "Current step",
+                accentTone = stepTone,
+                trailingHeader = {
+                    if (ps != null && engine != null && engine.prerequisitesMet(ps)) {
+                        TechnicalBadge("NODE", engine.current(ps).id.uppercase())
+                    } else if (ps != null) {
+                        TechnicalBadge("LOTO", "${ps.acknowledgedPrerequisites.size}/${procedure?.prerequisites?.size ?: 0}")
+                    }
+                },
+            ) {
                 when {
                     session.equipment == null -> Text("Confirm the exact model before guidance can start.")
                     procedure == null || engine == null -> {
@@ -385,100 +649,248 @@ private fun WorkflowPane(vm: BobAiViewModel, nav: NavHostController, session: Se
                         Text("You can still search approved manuals, ask a question (answers are quoted with sources), take notes, or stop and escalate.")
                     }
                     ps == null -> {
-                        Text(procedure.title, style = MaterialTheme.typography.titleMedium)
+                        Text(procedure.title, style = MaterialTheme.typography.titleLarge)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            TechnicalBadge("REV", procedure.version)
+                            TechnicalBadge("AUTH", procedure.requiredAuthorization)
+                        }
                         Text("Version ${procedure.version} · Requires: ${procedure.requiredAuthorization}")
                         PrimaryAction("Start procedure", { c.startProcedure() })
                     }
                     !engine.prerequisitesMet(ps) -> {
-                        Text("Before you begin, confirm each prerequisite:", fontWeight = FontWeight.Bold)
+                        // OSHA / Lockout-Tagout Safety Gate Box
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.14f),
+                            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary),
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    "OSHA / LOTO SAFETY PREREQUISITE GATE",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                )
+                                Text(
+                                    "Before you begin, confirm each prerequisite:",
+                                    fontWeight = FontWeight.ExtraBold,
+                                )
+                            }
+                        }
                         procedure.prerequisites.forEachIndexed { i, p ->
                             val checked = i in ps.acknowledgedPrerequisites
-                            Row(
-                                Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Checkbox) { c.acknowledge(i, !checked) }
+                            Surface(
+                                color = if (checked) MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f)
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (checked) MaterialTheme.colorScheme.secondary
+                                    else MaterialTheme.colorScheme.surfaceVariant,
+                                ),
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 52.dp)
+                                    .clickable(role = Role.Checkbox) { c.acknowledge(i, !checked) }
                                     .semantics { stateDescription = if (checked) "Confirmed" else "Not confirmed" },
-                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Checkbox(checked = checked, onCheckedChange = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text(p)
+                                Row(
+                                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Checkbox(checked = checked, onCheckedChange = null)
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(p, fontWeight = if (checked) FontWeight.Bold else FontWeight.Normal)
+                                }
                             }
                         }
                     }
                     else -> {
                         val node = engine.current(ps)
-                        Text(engine.stepLabel(ps), style = MaterialTheme.typography.labelLarge)
+                        // Breadcrumb path trail
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            TechnicalBadge("PROGRESS", engine.stepLabel(ps))
+                            TechnicalBadge("PATH", ps.path.joinToString(" → ").uppercase())
+                        }
                         if (node.kind == NodeKind.STOP) StatusChip("Stop — escalation required", Tone.BAD)
                         if (node.kind == NodeKind.COMPLETE) StatusChip("Procedure complete", Tone.OK)
-                        Text(node.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text(node.instruction, style = MaterialTheme.typography.bodyLarge, fontSize = 18.sp)
+                        Text(node.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                node.instruction,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontSize = 18.sp,
+                                modifier = Modifier.padding(14.dp),
+                            )
+                        }
                         node.citation?.let { cit ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Source: ${cit.label()}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                                TextButton(onClick = {
-                                    vm.openReference(cit.documentId, cit.page)
-                                    if (!expanded) nav.navigate(Routes.doc(cit.documentId, cit.page))
-                                }) { Text("Open") }
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                                shape = MaterialTheme.shapes.small,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Row(
+                                    Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        "Source: ${cit.label()}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    TextButton(onClick = {
+                                        vm.openReference(cit.documentId, cit.page)
+                                        if (!expanded) nav.navigate(Routes.doc(cit.documentId, cit.page))
+                                    }) {
+                                        Text("Open", fontWeight = FontWeight.ExtraBold)
+                                    }
+                                }
                             }
                         }
                         if (node.kind == NodeKind.STEP) {
-                            Text("BobAI: What result did you observe?", fontWeight = FontWeight.Bold)
+                            Text("BobAI: What result did you observe?", fontWeight = FontWeight.ExtraBold)
                             node.options.forEach { o ->
-                                Button(onClick = { (c.chooseOption(o.id) as? StepResult.NotUnderstood)?.let { vm.message = it.reason } }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), enabled = !ps.paused) { Text(o.label) }
+                                Button(
+                                    onClick = {
+                                        (c.chooseOption(o.id) as? StepResult.NotUnderstood)?.let { vm.message = it.reason }
+                                    },
+                                    shape = MaterialTheme.shapes.small,
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
+                                    enabled = !ps.paused,
+                                ) {
+                                    Text(o.label, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
+                                }
                             }
-                            OutlinedButton(onClick = { c.notSure(); vm.message = "Not advancing. Re-check, open the source, or stop and escalate." }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("I am not sure") }
+                            OutlinedButton(
+                                onClick = {
+                                    c.notSure()
+                                    vm.message = "Not advancing. Re-check, open the source, or stop and escalate."
+                                },
+                                shape = MaterialTheme.shapes.small,
+                                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary),
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                            ) {
+                                Text("I am not sure", fontWeight = FontWeight.Bold)
+                            }
                         }
-                        if (ps.path.size > 1) TextButton(onClick = { c.back() }) { Text("Previous step") }
+                        if (ps.path.size > 1) {
+                            TextButton(onClick = { c.back() }) {
+                                Text("Previous step", fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
         }
         item {
-            SectionCard("Ask or record") {
+            SectionCard(
+                title = "Ask or record",
+                trailingHeader = { TechnicalBadge("EVIDENCE", "EXACT CITATION") },
+            ) {
                 OutlinedTextField(
-                    vm.draftInput, { vm.draftInput = it },
+                    value = vm.draftInput,
+                    onValueChange = { vm.draftInput = it },
                     label = { Text("Type a question, a result, or a note") },
                     modifier = Modifier.fillMaxWidth(),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SecondaryAction("Ask sources", {
-                        c.ask(vm.draftInput); vm.draftInput = ""
-                    }, enabled = vm.draftInput.isNotBlank())
-                    SecondaryAction("Report result", {
-                        when (val r = c.interpret(vm.draftInput)) {
-                            is StepResult.Moved -> vm.draftInput = ""
-                            is StepResult.NotUnderstood -> vm.message = r.reason
-                        }
-                    }, enabled = vm.draftInput.isNotBlank() && ps != null)
-                    SecondaryAction("Save note", { c.addNote(vm.draftInput); vm.draftInput = "" }, enabled = vm.draftInput.isNotBlank())
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    SecondaryAction(
+                        "Ask sources",
+                        { c.ask(vm.draftInput); vm.draftInput = "" },
+                        enabled = vm.draftInput.isNotBlank(),
+                    )
+                    SecondaryAction(
+                        "Report result",
+                        {
+                            when (val r = c.interpret(vm.draftInput)) {
+                                is StepResult.Moved -> vm.draftInput = ""
+                                is StepResult.NotUnderstood -> vm.message = r.reason
+                            }
+                        },
+                        enabled = vm.draftInput.isNotBlank() && ps != null,
+                    )
+                    SecondaryAction(
+                        "Save note",
+                        { c.addNote(vm.draftInput); vm.draftInput = "" },
+                        enabled = vm.draftInput.isNotBlank(),
+                    )
                 }
-                Text("Answers quote approved sources only. Typed results advance only on an exact match.", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Answers quote approved sources only. Typed results advance only on an exact match.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
-        item { Text("Session timeline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        items(session.observations.asReversed()) { o -> TimelineItem(o) { cit -> vm.openReference(cit.documentId, cit.page); if (!expanded) nav.navigate(Routes.doc(cit.documentId, cit.page)) } }
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Session timeline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
+                TechnicalBadge("EVENTS", "${session.observations.size}")
+            }
+        }
+        items(session.observations.asReversed()) { o ->
+            TimelineItem(o) { cit ->
+                vm.openReference(cit.documentId, cit.page)
+                if (!expanded) nav.navigate(Routes.doc(cit.documentId, cit.page))
+            }
+        }
     }
 }
 
 @Composable
-private fun TimelineItem(o: Observation, onCitation: (com.lpecom.gemglasses.bobai.domain.EvidenceCitation) -> Unit) {
-    val who = when (o.kind) {
-        ObservationKind.TECHNICIAN_REPORT -> "You (technician report)"
-        ObservationKind.VISUAL_CAPTURE -> "Photo"
-        ObservationKind.SOURCE_STATEMENT -> "Approved source (quoted)"
-        ObservationKind.SYSTEM -> "BobAI (procedure)"
+private fun TimelineItem(
+    o: Observation,
+    onCitation: (com.lpecom.gemglasses.bobai.domain.EvidenceCitation) -> Unit,
+) {
+    val (who, badge, tone) = when (o.kind) {
+        ObservationKind.TECHNICIAN_REPORT -> Triple("You (technician report)", "TECH", Tone.NEUTRAL)
+        ObservationKind.VISUAL_CAPTURE -> Triple("Photo", "OPTIC", Tone.WARN)
+        ObservationKind.SOURCE_STATEMENT -> Triple("Approved source (quoted)", "SPEC", Tone.OK)
+        ObservationKind.SYSTEM -> Triple("BobAI (procedure)", "SYS", Tone.NEUTRAL)
     }
     Surface(
-        shape = MaterialTheme.shapes.medium,
-        color = if (o.kind == ObservationKind.TECHNICIAN_REPORT) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+        shape = MaterialTheme.shapes.small,
+        color = if (o.kind == ObservationKind.TECHNICIAN_REPORT)
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        else MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, toneColor(tone).copy(alpha = 0.5f)),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(who, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-            Text(o.text)
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(who, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.ExtraBold)
+                TechnicalBadge("LOG", badge)
+            }
+            Text(o.text, style = MaterialTheme.typography.bodyMedium)
             o.citation?.let { cit ->
-                TextButton(onClick = { onCitation(cit) }) { Text("Source: ${cit.label()}") }
+                TextButton(onClick = { onCitation(cit) }) {
+                    Text("Source: ${cit.label()}", fontWeight = FontWeight.ExtraBold)
+                }
             }
         }
     }
@@ -487,21 +899,55 @@ private fun TimelineItem(o: Observation, onCitation: (com.lpecom.gemglasses.boba
 @Composable
 private fun ControlBar(vm: BobAiViewModel, session: Session, onEnd: () -> Unit) {
     val c = vm.controller
-    Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
+    Surface(
+        tonalElevation = 4.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             val mod = Modifier.weight(1f).heightIn(min = 52.dp)
             val pad = PaddingValues(horizontal = 4.dp)
-            OutlinedButton(onClick = {
-                vm.message = "Voice control isn't connected to BobAI workflows yet. Type below, or use Settings → Live voice for the existing assistant."
-            }, modifier = mod, contentPadding = pad) { Text("Speak", maxLines = 1, overflow = TextOverflow.Clip) }
-            OutlinedButton(onClick = {
-                val e = c.engine(session); val ps = session.procedureState
-                vm.message = if (e != null && ps != null) e.current(ps).instruction else "No current step to repeat."
-            }, modifier = mod, contentPadding = pad) { Text("Repeat", maxLines = 1, overflow = TextOverflow.Clip) }
-            OutlinedButton(onClick = { vm.capture() }, enabled = !vm.capturing, modifier = mod, contentPadding = pad) {
-                Text(if (vm.capturing) "Capturing…" else "Capture", maxLines = 1, overflow = TextOverflow.Clip)
+            OutlinedButton(
+                onClick = {
+                    vm.message = "Voice control isn't connected to BobAI workflows yet. Type below, or use Settings → Live voice for the existing assistant."
+                },
+                shape = MaterialTheme.shapes.small,
+                modifier = mod,
+                contentPadding = pad,
+            ) { Text("Speak", maxLines = 1, overflow = TextOverflow.Clip, fontWeight = FontWeight.Bold) }
+            OutlinedButton(
+                onClick = {
+                    val e = c.engine(session); val ps = session.procedureState
+                    vm.message = if (e != null && ps != null) e.current(ps).instruction else "No current step to repeat."
+                },
+                shape = MaterialTheme.shapes.small,
+                modifier = mod,
+                contentPadding = pad,
+            ) { Text("Repeat", maxLines = 1, overflow = TextOverflow.Clip, fontWeight = FontWeight.Bold) }
+            OutlinedButton(
+                onClick = { vm.capture() },
+                enabled = !vm.capturing,
+                shape = MaterialTheme.shapes.small,
+                modifier = mod,
+                contentPadding = pad,
+            ) {
+                Text(
+                    if (vm.capturing) "Capturing…" else "Capture",
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip,
+                    fontWeight = FontWeight.Bold,
+                )
             }
-            Button(onClick = onEnd, modifier = mod, contentPadding = pad, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("End", maxLines = 1) }
+            Button(
+                onClick = onEnd,
+                shape = MaterialTheme.shapes.small,
+                modifier = mod,
+                contentPadding = pad,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
+            ) { Text("End", maxLines = 1, fontWeight = FontWeight.ExtraBold) }
         }
     }
 }
@@ -514,9 +960,22 @@ private fun ReferencePane(vm: BobAiViewModel, session: Session) {
     val docId = vm.referenceDocId ?: stepCitation?.documentId
     val page = vm.referencePage ?: stepCitation?.page
     Column(Modifier.fillMaxSize().padding(top = 16.dp, end = 16.dp)) {
-        TabRow(selectedTabIndex = vm.referenceTab) {
-            listOf("Manual", "Photos", "Notes").forEachIndexed { i, t ->
-                Tab(selected = vm.referenceTab == i, onClick = { vm.referenceTab = i }, text = { Text(t) })
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            TabRow(
+                selectedTabIndex = vm.referenceTab,
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
+                listOf("Manual", "Photos", "Notes").forEachIndexed { i, t ->
+                    Tab(
+                        selected = vm.referenceTab == i,
+                        onClick = { vm.referenceTab = i },
+                        text = { Text(t, fontWeight = FontWeight.ExtraBold) },
+                    )
+                }
             }
         }
         when (vm.referenceTab) {
@@ -535,16 +994,26 @@ private fun ReferencePane(vm: BobAiViewModel, session: Session) {
             else -> ScrollPage {
                 val notes = session.observations.filter { it.kind == ObservationKind.TECHNICIAN_REPORT }
                 if (notes.isEmpty()) Text("No technician notes yet.")
-                notes.forEach { Text("• ${it.text}") }
+                notes.forEach {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("• ${it.text}", modifier = Modifier.padding(12.dp))
+                    }
+                }
             }
         }
     }
 }
 
 // =========================================================================
-// Library + document viewer
+// Library + Schematic Blueprint Document Viewer
 // =========================================================================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
@@ -566,12 +1035,29 @@ fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Library")
+        ScreenHeader("Library") {
+            TechnicalBadge("DOCS", "${docs.size}/${c.knowledge.allDocuments().size}")
+            Spacer(Modifier.width(8.dp))
+        }
         ScrollPage {
-            OutlinedTextField(query, { query = it }, label = { Text("Search manuals") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("Search manuals") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 listOf("All", "Applies to ${equipment?.model ?: "current equipment"}", "Downloaded").forEachIndexed { i, l ->
-                    FilterChip(selected = filter == i, onClick = { filter = i }, label = { Text(l) }, enabled = i != 1 || equipment != null)
+                    FilterChip(
+                        selected = filter == i,
+                        onClick = { filter = i },
+                        label = { Text(l, fontWeight = FontWeight.Bold) },
+                        enabled = i != 1 || equipment != null,
+                    )
                 }
             }
             if (docs.isEmpty()) Text("No documents match. Try another search, or check Downloads.")
@@ -585,7 +1071,16 @@ fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
 @Composable
 private fun DocCard(vm: BobAiViewModel, d: SourceDocument, onOpen: () -> Unit) {
     val avail = vm.controller.knowledge.availability(d)
-    SectionCard(d.title) {
+    val tone = when (d.approvalStatus) {
+        ApprovalStatus.APPROVED -> Tone.OK
+        ApprovalStatus.DRAFT -> Tone.WARN
+        ApprovalStatus.REVOKED -> Tone.BAD
+    }
+    SectionCard(
+        title = d.title,
+        accentTone = tone,
+        trailingHeader = { TechnicalBadge("REV", d.revision) },
+    ) {
         Text("Revision ${d.revision} · Applies to: ${d.applicableModels.joinToString()}")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             when (d.approvalStatus) {
@@ -593,7 +1088,15 @@ private fun DocCard(vm: BobAiViewModel, d: SourceDocument, onOpen: () -> Unit) {
                 ApprovalStatus.DRAFT -> StatusChip("Draft — unreviewed, not used for guidance", Tone.WARN)
                 ApprovalStatus.REVOKED -> StatusChip("Revoked — not used for guidance", Tone.BAD)
             }
-            StatusChip(avail.label, when (avail) { DocAvailability.LOCAL -> Tone.OK; DocAvailability.STALE -> Tone.WARN; else -> Tone.BAD })
+            StatusChip(
+                avail.label,
+                when (avail) {
+                    DocAvailability.LOCAL -> Tone.OK
+                    DocAvailability.STALE -> Tone.WARN
+                    else -> Tone.BAD
+                },
+            )
+            TechnicalBadge("PAGES", "${d.pages.size}")
         }
         SecondaryAction(if (avail.readable) "Open" else "View details", onOpen)
     }
@@ -604,7 +1107,12 @@ fun DocumentScreen(vm: BobAiViewModel, nav: NavHostController, docId: String, in
     val doc = vm.controller.knowledge.document(docId)
     var page by rememberSaveable { mutableStateOf(initialPage) }
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader(doc?.title ?: "Document", onBack = { nav.popBackStack() })
+        ScreenHeader(doc?.title ?: "Document", onBack = { nav.popBackStack() }) {
+            doc?.let {
+                TechnicalBadge("REV", it.revision)
+                Spacer(Modifier.width(8.dp))
+            }
+        }
         if (doc == null) {
             ScrollPage { Text("This document no longer exists in the library.") }
         } else {
@@ -614,39 +1122,125 @@ fun DocumentScreen(vm: BobAiViewModel, nav: NavHostController, docId: String, in
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DocumentBody(vm: BobAiViewModel, doc: SourceDocument, page: Int?, onPage: (Int) -> Unit, returnToStep: (() -> Unit)?) {
+private fun DocumentBody(
+    vm: BobAiViewModel,
+    doc: SourceDocument,
+    page: Int?,
+    onPage: (Int) -> Unit,
+    returnToStep: (() -> Unit)?,
+) {
     val avail = vm.controller.knowledge.availability(doc)
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
     ScrollPage {
-        Text("Revision ${doc.revision} · ${doc.approvalStatus.name.lowercase()} · Applies to ${doc.applicableModels.joinToString()}", style = MaterialTheme.typography.bodyMedium)
-        if (doc.approvalStatus != ApprovalStatus.APPROVED) StatusChip("Not approved — reference only, never used for guidance", Tone.BAD)
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            TechnicalBadge("DOC-ID", doc.id.uppercase())
+            TechnicalBadge("REV", doc.revision)
+            TechnicalBadge("MODELS", doc.applicableModels.joinToString())
+        }
+        Text(
+            "Revision ${doc.revision} · ${doc.approvalStatus.name.lowercase()} · Applies to ${doc.applicableModels.joinToString()}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (doc.approvalStatus != ApprovalStatus.APPROVED) {
+            StatusChip("Not approved — reference only, never used for guidance", Tone.BAD)
+        }
         if (!avail.readable) {
             StatusChip(avail.label, Tone.BAD)
             Text("This document isn't available on the device. Open Downloads and download or repair its pack.")
             return@ScrollPage
         }
-        if (avail == DocAvailability.STALE) StatusChip("Pack expired — refresh before relying on this content", Tone.WARN)
+        if (avail == DocAvailability.STALE) {
+            StatusChip("Pack expired — refresh before relying on this content", Tone.WARN)
+        }
         val pages = doc.pages
         val idx = pages.indexOfFirst { it.number == page }.takeIf { it >= 0 } ?: 0
         val p = pages[idx]
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { onPage(pages[idx - 1].number) }, enabled = idx > 0) { Text("◀ Prev") }
-            Text("Page ${p.number}", modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, maxLines = 1)
-            TextButton(onClick = { onPage(pages[idx + 1].number) }, enabled = idx < pages.size - 1) { Text("Next ▶") }
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = { onPage(pages[idx - 1].number) }, enabled = idx > 0) {
+                    Text("◀ Prev", fontWeight = FontWeight.ExtraBold)
+                }
+                Text(
+                    "Page ${p.number}",
+                    modifier = Modifier.weight(1f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                )
+                TextButton(onClick = { onPage(pages[idx + 1].number) }, enabled = idx < pages.size - 1) {
+                    Text("Next ▶", fontWeight = FontWeight.ExtraBold)
+                }
+            }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Zoom")
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Zoom", fontWeight = FontWeight.Bold)
             Slider(zoom, { zoom = it }, valueRange = 1f..2f, modifier = Modifier.weight(1f))
+            TechnicalBadge("SCALE", "${(zoom * 100).toInt()}%")
         }
-        Surface(color = MaterialTheme.colorScheme.surface, border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurfaceVariant), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text(p.heading, fontWeight = FontWeight.Bold, fontSize = (20 * zoom).sp)
-                Spacer(Modifier.padding(4.dp))
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)),
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "SECTION · PAGE ${p.number}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "REV ${doc.revision} SPEC",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                Text(p.heading, fontWeight = FontWeight.ExtraBold, fontSize = (20 * zoom).sp)
                 Text(p.body, fontSize = (16 * zoom).sp, lineHeight = (24 * zoom).sp)
-                Spacer(Modifier.padding(4.dp))
-                Box(Modifier.fillMaxWidth().heightIn(min = 80.dp).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
-                    Text("[Original page image / diagram placeholder — mock]")
+                // Technical Blueprint Schematic Box
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)),
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 100.dp),
+                ) {
+                    Column(
+                        Modifier.padding(14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "CAD / SCHEMATIC FIGURE ${p.number}.1 — TERMINAL J3 & CIRCUIT BLOCK",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            "[Original page image / diagram placeholder — mock]",
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
         }
@@ -655,7 +1249,7 @@ private fun DocumentBody(vm: BobAiViewModel, doc: SourceDocument, page: Int?, on
 }
 
 // =========================================================================
-// Jobs, job detail, summary review
+// Jobs, Work Order Detail, & Compliance Sign-Off Summary Review
 // =========================================================================
 
 private fun SyncState.label() = when (this) {
@@ -670,14 +1264,29 @@ private fun SyncState.label() = when (this) {
 fun JobsScreen(vm: BobAiViewModel, nav: NavHostController) {
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Jobs")
+        ScreenHeader("Jobs") {
+            TechnicalBadge("TOTAL", "${snapshot.jobs.size} WO")
+            Spacer(Modifier.width(8.dp))
+        }
         ScrollPage {
-            Text("Jobs are stored on this device only. Sync is not implemented yet.", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Jobs are stored on this device only. Sync is not implemented yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             if (snapshot.jobs.isEmpty()) Text("No jobs yet. Start the assistant from Home to create one.")
             snapshot.jobs.sortedByDescending { it.updatedAt }.forEach { j ->
-                SectionCard(j.site) {
+                val done = j.status.name == "COMPLETED"
+                SectionCard(
+                    title = j.site,
+                    accentTone = if (done) Tone.OK else Tone.WARN,
+                    trailingHeader = { TechnicalBadge("WO#", j.id.takeLast(8).uppercase()) },
+                ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        StatusChip(j.status.name.lowercase().replace('_', ' '), if (j.status.name == "COMPLETED") Tone.OK else Tone.NEUTRAL)
+                        StatusChip(
+                            j.status.name.lowercase().replace('_', ' '),
+                            if (done) Tone.OK else Tone.NEUTRAL,
+                        )
                         StatusChip(j.syncState.label(), Tone.NEUTRAL)
                     }
                     Text("Updated ${fmtDate(j.updatedAt)} · ${snapshot.sessions.count { it.jobId == j.id }} session(s)")
@@ -688,19 +1297,39 @@ fun JobsScreen(vm: BobAiViewModel, nav: NavHostController) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun JobDetailScreen(vm: BobAiViewModel, nav: NavHostController, jobId: String) {
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
     val job = snapshot.jobs.firstOrNull { it.id == jobId }
     val sessions = snapshot.sessions.filter { it.jobId == jobId }.sortedByDescending { it.updatedAt }
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader(job?.site ?: "Job", onBack = { nav.popBackStack() })
+        ScreenHeader(job?.site ?: "Job", onBack = { nav.popBackStack() }) {
+            job?.let {
+                TechnicalBadge("WO#", it.id.takeLast(8).uppercase())
+                Spacer(Modifier.width(8.dp))
+            }
+        }
         ScrollPage {
-            if (job == null) { Text("Job not found."); return@ScrollPage }
-            SectionCard("Job") {
+            if (job == null) {
+                Text("Job not found.")
+                return@ScrollPage
+            }
+            val eq = sessions.firstNotNullOfOrNull { it.equipment }
+            SectionCard(
+                title = "Job",
+                accentTone = if (job.status.name == "COMPLETED") Tone.OK else Tone.WARN,
+                trailingHeader = { TechnicalBadge("TECH", job.assignedUser.uppercase()) },
+            ) {
                 Text("Status: ${job.status.name.lowercase().replace('_', ' ')} · ${job.syncState.label()}")
-                Text("Equipment: " + (sessions.firstNotNullOfOrNull { it.equipment }?.let { "${it.model} (S/N ${it.serial.ifBlank { "n/a" }})" } ?: "Not confirmed"))
-                if (job.isMock) StatusChip("Mock job", Tone.WARN)
+                Text("Equipment: " + (eq?.let { "${it.model} (S/N ${it.serial.ifBlank { "n/a" }})" } ?: "Not confirmed"))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (job.isMock) StatusChip("Mock job", Tone.WARN)
+                    eq?.let { TechnicalBadge("MODEL", it.model) }
+                }
                 val active = vm.controller.activeSession()
                 if (active?.jobId == job.id) {
                     PrimaryAction("Resume session", { nav.navigate(if (active.equipment == null) Routes.EQUIPMENT else Routes.ASSISTANT) })
@@ -712,11 +1341,20 @@ fun JobDetailScreen(vm: BobAiViewModel, nav: NavHostController, jobId: String) {
             }
             if (sessions.isEmpty()) Text("No sessions yet.")
             sessions.forEach { s ->
-                SectionCard("Session · ${fmtDate(s.createdAt)}") {
+                SectionCard(
+                    title = "Session · ${fmtDate(s.createdAt)}",
+                    accentTone = if (s.summaryReviewed) Tone.OK else Tone.NEUTRAL,
+                    trailingHeader = { TechnicalBadge("STATE", s.status.name) },
+                ) {
                     Text("${s.status.name.lowercase()} · ${s.observations.size} timeline entries · ${s.mediaReferences.size} photo(s)")
-                    s.observations.takeLast(4).forEach { Text("• ${it.text}", style = MaterialTheme.typography.bodyMedium, maxLines = 2) }
+                    s.observations.takeLast(4).forEach {
+                        Text("• ${it.text}", style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                    }
                     if (s.status == SessionStatus.ENDED) {
-                        SecondaryAction(if (s.summaryReviewed) "View reviewed summary" else "Review job summary", { nav.navigate(Routes.summary(s.id)) })
+                        SecondaryAction(
+                            if (s.summaryReviewed) "View reviewed summary" else "Review job summary",
+                            { nav.navigate(Routes.summary(s.id)) },
+                        )
                     }
                 }
             }
@@ -724,31 +1362,67 @@ fun JobDetailScreen(vm: BobAiViewModel, nav: NavHostController, jobId: String) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SummaryScreen(vm: BobAiViewModel, nav: NavHostController, sessionId: String) {
     val session = vm.controller.session(sessionId)
     var text by rememberSaveable { mutableStateOf(session?.draftSummary ?: "") }
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Job summary review", onBack = { nav.popBackStack() })
+        ScreenHeader("Job summary review", onBack = { nav.popBackStack() }) {
+            TechnicalBadge("AUDIT", "SIGN-OFF")
+            Spacer(Modifier.width(8.dp))
+        }
         ScrollPage {
-            if (session == null) { Text("Session not found."); return@ScrollPage }
-            StatusChip(if (session.summaryReviewed) "Reviewed · saved locally" else "Draft · saved locally", if (session.summaryReviewed) Tone.OK else Tone.WARN)
-            Text("Edit anything that's wrong. Nothing is shared or synced from this screen.", style = MaterialTheme.typography.bodyMedium)
-            OutlinedTextField(text, { text = it }, label = { Text("Summary") }, modifier = Modifier.fillMaxWidth().heightIn(min = 240.dp))
+            if (session == null) {
+                Text("Session not found.")
+                return@ScrollPage
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                StatusChip(
+                    if (session.summaryReviewed) "Reviewed · saved locally" else "Draft · saved locally",
+                    if (session.summaryReviewed) Tone.OK else Tone.WARN,
+                )
+                session.equipment?.let { TechnicalBadge("ASSET", it.model) }
+                TechnicalBadge("CITATIONS", "${session.observations.mapNotNull { it.citation }.distinct().size}")
+            }
+            Text(
+                "Edit anything that's wrong. Nothing is shared or synced from this screen.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("Summary") },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 240.dp),
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SecondaryAction("Save draft", { vm.controller.saveSummary(sessionId, text, reviewed = false); vm.message = "Draft saved on this device." })
-                Button(onClick = {
-                    vm.controller.saveSummary(sessionId, text, reviewed = true)
-                    vm.message = "Summary marked reviewed and saved locally."
-                    nav.goTop(Routes.JOBS)
-                }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Mark reviewed & save") }
+                SecondaryAction("Save draft", {
+                    vm.controller.saveSummary(sessionId, text, reviewed = false)
+                    vm.message = "Draft saved on this device."
+                })
+                Button(
+                    onClick = {
+                        vm.controller.saveSummary(sessionId, text, reviewed = true)
+                        vm.message = "Summary marked reviewed and saved locally."
+                        nav.goTop(Routes.JOBS)
+                    },
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text("Mark reviewed & save", fontWeight = FontWeight.ExtraBold)
+                }
             }
         }
     }
 }
 
 // =========================================================================
-// Downloads
+// Downloads — Knowledge Pack Integrity & Storage Telemetry
 // =========================================================================
 
 @Composable
@@ -756,14 +1430,31 @@ fun DownloadsScreen(vm: BobAiViewModel, nav: NavHostController) {
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val free = remember(snapshot) { StatFs(context.filesDir.path).availableBytes }
+    val total = remember(snapshot) { StatFs(context.filesDir.path).totalBytes.coerceAtLeast(1L) }
     var confirmDelete by rememberSaveable { mutableStateOf<String?>(null) }
     val now = System.currentTimeMillis()
 
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Downloads", onBack = { nav.popBackStack() })
+        ScreenHeader("Downloads", onBack = { nav.popBackStack() }) {
+            TechnicalBadge("PACKS", "${snapshot.packs.size}")
+            Spacer(Modifier.width(8.dp))
+        }
         ScrollPage {
-            Text("Free space on device: ${free / 1_000_000_000} GB", style = MaterialTheme.typography.bodyLarge)
-            Text("Downloads here are simulated (no files are transferred). States and storage checks are real UI states.", style = MaterialTheme.typography.bodySmall)
+            SectionCard(
+                title = "Device Storage Telemetry",
+                trailingHeader = { TechnicalBadge("FREE", "${free / 1_000_000_000} GB") },
+            ) {
+                Text("Free space on device: ${free / 1_000_000_000} GB", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                LinearProgressIndicator(
+                    progress = { ((total - free).toFloat() / total.toFloat()).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                )
+                Text(
+                    "Downloads here are simulated (no files are transferred). States and storage checks are real UI states.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             snapshot.packs.forEach { p -> PackCard(p, now, free, vm) { confirmDelete = p.id } }
         }
     }
@@ -772,8 +1463,15 @@ fun DownloadsScreen(vm: BobAiViewModel, nav: NavHostController) {
             onDismissRequest = { confirmDelete = null },
             title = { Text("Remove pack?") },
             text = { Text("Manuals in this pack won't be available offline until downloaded again.") },
-            confirmButton = { TextButton(onClick = { vm.controller.setPackState(id, PackState.NOT_DOWNLOADED); confirmDelete = null }) { Text("Remove") } },
-            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.controller.setPackState(id, PackState.NOT_DOWNLOADED)
+                    confirmDelete = null
+                }) { Text("Remove", fontWeight = FontWeight.ExtraBold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = null }) { Text("Cancel") }
+            },
         )
     }
 }
@@ -781,18 +1479,28 @@ fun DownloadsScreen(vm: BobAiViewModel, nav: NavHostController) {
 @Composable
 private fun PackCard(p: KnowledgePack, now: Long, free: Long, vm: BobAiViewModel, onDelete: () -> Unit) {
     val c = vm.controller
-    SectionCard(p.name) {
+    val (label, tone) = when {
+        p.state == PackState.COMPLETE && p.isExpired(now) -> "Expired ${fmtDate(p.expiresAt)} — refresh required" to Tone.WARN
+        p.state == PackState.COMPLETE -> "Downloaded · verified" to Tone.OK
+        p.state == PackState.PENDING -> "Download pending" to Tone.NEUTRAL
+        p.state == PackState.CORRUPTED -> "Corrupted — integrity check failed" to Tone.BAD
+        p.state == PackState.INSUFFICIENT_STORAGE -> "Insufficient storage" to Tone.BAD
+        else -> "Not downloaded" to Tone.NEUTRAL
+    }
+    SectionCard(
+        title = p.name,
+        accentTone = tone,
+        trailingHeader = { TechnicalBadge("VER", p.version) },
+    ) {
         Text("Version ${p.version} · ${mb(p.sizeBytes)} · ${p.documentIds.size} document(s)")
-        val (label, tone) = when {
-            p.state == PackState.COMPLETE && p.isExpired(now) -> "Expired ${fmtDate(p.expiresAt)} — refresh required" to Tone.WARN
-            p.state == PackState.COMPLETE -> "Downloaded · verified" to Tone.OK
-            p.state == PackState.PENDING -> "Download pending" to Tone.NEUTRAL
-            p.state == PackState.CORRUPTED -> "Corrupted — integrity check failed" to Tone.BAD
-            p.state == PackState.INSUFFICIENT_STORAGE -> "Insufficient storage" to Tone.BAD
-            else -> "Not downloaded" to Tone.NEUTRAL
-        }
         StatusChip(label, tone)
-        if (p.downloadedAt != null) Text("Last verified ${fmtDate(p.lastVerifiedAt)} · Expires ${fmtDate(p.expiresAt)}")
+        if (p.downloadedAt != null) {
+            Text(
+                "Last verified ${fmtDate(p.lastVerifiedAt)} · Expires ${fmtDate(p.expiresAt)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         val download = {
             c.setPackState(p.id, if (p.sizeBytes > free) PackState.INSUFFICIENT_STORAGE else PackState.COMPLETE)
         }
@@ -800,7 +1508,10 @@ private fun PackCard(p: KnowledgePack, now: Long, free: Long, vm: BobAiViewModel
             when (p.state) {
                 PackState.COMPLETE -> {
                     if (p.isExpired(now)) SecondaryAction("Refresh", download)
-                    else SecondaryAction("Verify", { c.setPackState(p.id, PackState.COMPLETE); vm.message = "Pack verified (simulated checksum)." })
+                    else SecondaryAction("Verify", {
+                        c.setPackState(p.id, PackState.COMPLETE)
+                        vm.message = "Pack verified (simulated checksum)."
+                    })
                     SecondaryAction("Remove", onDelete)
                 }
                 PackState.CORRUPTED -> {
@@ -815,52 +1526,121 @@ private fun PackCard(p: KnowledgePack, now: Long, free: Long, vm: BobAiViewModel
 }
 
 // =========================================================================
-// Settings
+// Settings — Enterprise Brand Skinning, Hardware DAT & Field Diagnostics
 // =========================================================================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
     val mode by vm.mode.collectAsStateWithLifecycle()
     val glasses by vm.glasses.collectAsStateWithLifecycle()
     val config = LocalConfiguration.current
+    val brand = LocalIndustrialBrand.current
+    val darkOverride = LocalDarkThemeOverride.current
+    val setDarkOverride = LocalDarkThemeSetter.current
+
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader("Settings")
+        ScreenHeader("Settings") {
+            TechnicalBadge("PROFILE", brand.badgeCode)
+            Spacer(Modifier.width(8.dp))
+        }
         ScrollPage {
-            SectionCard("Hardware") {
+            SectionCard(
+                title = "Enterprise Brand & Field Display Mode",
+                trailingHeader = { TechnicalBadge("THEME", if (darkOverride == false) "DAYLIGHT" else "TACTICAL DARK") },
+            ) {
+                Text(
+                    "Select an industrial OEM / MRO distributor skin and lighting contrast profile:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                BrandProfileSelector()
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FilterChip(
+                        selected = darkOverride == true,
+                        onClick = { setDarkOverride(true) },
+                        label = { Text("Tactical Slate (Dark)", fontWeight = FontWeight.Bold) },
+                    )
+                    FilterChip(
+                        selected = darkOverride == false,
+                        onClick = { setDarkOverride(false) },
+                        label = { Text("Daylight Shop Floor (Light)", fontWeight = FontWeight.Bold) },
+                    )
+                    FilterChip(
+                        selected = darkOverride == null,
+                        onClick = { setDarkOverride(null) },
+                        label = { Text("Follow System", fontWeight = FontWeight.Bold) },
+                    )
+                }
+            }
+            SectionCard(
+                title = "Hardware",
+                accentTone = if (glasses.ok) Tone.OK else Tone.WARN,
+                trailingHeader = { TechnicalBadge("DAT", if (BuildConfig.USE_REAL_GLASSES) "1.0.1" else "MOCK") },
+            ) {
                 StatusChip(glasses.label, if (glasses.ok) Tone.OK else Tone.WARN)
                 Text(glasses.detail)
                 Text("Glasses backend: ${if (BuildConfig.USE_REAL_GLASSES) "Meta DAT SDK" else "Mock (built with gemglasses.useRealGlasses=false)"}")
                 if (BuildConfig.USE_REAL_GLASSES) {
-                    if (!glasses.ok) SecondaryAction("Register with Meta AI", { vm.registerGlasses() })
-                    SecondaryAction("Allow glasses camera", { vm.requestGlassesCamera() })
-                    if (glasses.ok) SecondaryAction("Test glasses camera", { vm.testGlassesCamera() })
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (!glasses.ok) SecondaryAction("Register with Meta AI", { vm.registerGlasses() })
+                        SecondaryAction("Allow glasses camera", { vm.requestGlassesCamera() })
+                        if (glasses.ok) SecondaryAction("Test glasses camera", { vm.testGlassesCamera() })
+                        if (glasses.ok) SecondaryAction("Unregister from Meta AI", { vm.unregisterGlasses() })
+                    }
                 }
-                Text("Glasses camera/audio in BobAI workflows: not wired yet (Phase 2, needs hardware testing).", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Glasses camera: one photo per Capture tap, saved to the active job. Glasses audio: not wired yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            SectionCard("Assistant and inference") {
+            SectionCard(
+                title = "Assistant and inference",
+                accentTone = mode.tone(),
+                trailingHeader = { TechnicalBadge("ROUTER", mode.mode.name) },
+            ) {
                 StatusChip("Mode: ${mode.mode.label}", mode.tone())
-                mode.available.forEach { Text("✓ $it") }
-                mode.unavailable.forEach { Text("✕ $it") }
+                mode.available.forEach { Text("✓ $it", fontWeight = FontWeight.Medium) }
+                mode.unavailable.forEach { Text("✕ $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 Text("Local model: none configured. Requires benchmarks on the exact phone (Phase 4).")
                 Text("Offline speech / voices: none downloaded.")
             }
-            SectionCard("Live voice (existing GemGlasses)") {
+            SectionCard(
+                title = "Live voice (existing GemGlasses)",
+                trailingHeader = { TechnicalBadge("GEMINI", "LIVE WS") },
+            ) {
                 Text("The original Gemini Live voice assistant is unchanged. It needs internet and the configured backend.")
                 SecondaryAction("Open Live voice", { nav.navigate(Routes.LIVE) })
             }
-            SectionCard("Privacy") {
+            SectionCard(
+                title = "Privacy",
+                trailingHeader = { TechnicalBadge("POLICY", "LOCAL-FIRST") },
+            ) {
                 Text("• Camera and microphone are never used in the background by BobAI.")
                 Text("• Photos are captured only when you tap Capture.")
                 Text("• Jobs, notes and summaries are stored only on this device. Nothing is shared without review.")
                 Text("• Retention controls: not configured yet.")
             }
-            SectionCard("Accessibility") {
+            SectionCard(
+                title = "Accessibility",
+                trailingHeader = { TechnicalBadge("WCAG", "AAA GLOVE") },
+            ) {
                 Text("Follows the system font size and dark theme. All status indicators include text and icons.")
             }
-            SectionCard("Diagnostics") {
-                Text("App ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})")
-                Text("Device: ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-                Text("Window: ${config.screenWidthDp}×${config.screenHeightDp} dp · layout ${if (LocalExpanded.current) "expanded (two-pane)" else "compact (single-pane)"}")
+            SectionCard(
+                title = "Diagnostics",
+                trailingHeader = { TechnicalBadge("API", "${Build.VERSION.SDK_INT}") },
+            ) {
+                Text("App ${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})", fontFamily = FontFamily.Monospace)
+                Text("Device: ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})", fontFamily = FontFamily.Monospace)
+                Text("Window: ${config.screenWidthDp}×${config.screenHeightDp} dp · layout ${if (LocalExpanded.current) "expanded (two-pane)" else "compact (single-pane)"}", fontFamily = FontFamily.Monospace)
             }
         }
     }
@@ -879,7 +1659,18 @@ private fun captureLabel(vm: BobAiViewModel): String = when {
 @Composable
 private fun CapturedPhoto(vm: BobAiViewModel, ref: String) {
     if (isMockPhoto(ref)) {
-        Text("• $ref (mock placeholder)")
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)),
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                "• $ref (mock placeholder)",
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.padding(10.dp),
+            )
+        }
         return
     }
     val image by produceState<Pair<Boolean, ImageBitmap?>>(false to null, ref) {

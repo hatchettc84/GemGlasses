@@ -75,6 +75,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.lpecom.gemglasses.BuildConfig
 import com.lpecom.gemglasses.bobai.data.MockContent
+import com.lpecom.gemglasses.bobai.workmode.ActivationTrigger
+import com.lpecom.gemglasses.bobai.workmode.WorkModeState
+import com.lpecom.gemglasses.bobai.workmode.WorkPhase
 import com.lpecom.gemglasses.bobai.data.isMockPhoto
 import com.lpecom.gemglasses.bobai.domain.ApprovalStatus
 import com.lpecom.gemglasses.bobai.domain.DocAvailability
@@ -154,6 +157,7 @@ fun HomeScreen(vm: BobAiViewModel, nav: NavHostController) {
                 )
             }
         }
+        WorkModeCard(vm, onStartAssistance = { start() })
         SectionCard(
             title = "Current job",
             accentTone = if (active != null) Tone.OK else Tone.NEUTRAL,
@@ -1576,6 +1580,9 @@ fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
                     )
                 }
             }
+            WorkModeSettingsCard(vm)
+            AssistanceModesCard(vm)
+            KnowledgeSyncCard()
             SectionCard(
                 title = "Hardware",
                 accentTone = if (glasses.ok) Tone.OK else Tone.WARN,
@@ -1688,5 +1695,176 @@ private fun CapturedPhoto(vm: BobAiViewModel, ref: String) {
         )
         loaded -> Text("Photo file missing on this device: ${ref.substringAfterLast('/')}")
         else -> Text("Loading photo…")
+    }
+}
+
+
+// ---- Addendum: Work Mode, "Hey Bob", assistance modes, knowledge sync -------
+
+/**
+ * Home card for Work Mode (addendum §8). Every value is real measured state;
+ * "Hey Bob armed" only appears while a detector is running, which today it
+ * never is.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
+    val wm by vm.workModeState.collectAsStateWithLifecycle()
+    val glasses by vm.glasses.collectAsStateWithLifecycle()
+    val mode by vm.mode.collectAsStateWithLifecycle()
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { vm.workMode.enable() }
+
+    // Permission can be revoked while the app is in the background.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) vm.workMode.recheck()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+
+    SectionCard(
+        title = "Work Mode",
+        accentTone = when {
+            !wm.workModeOn -> Tone.NEUTRAL
+            wm.heyBobArmed || wm.isActive -> Tone.OK
+            else -> Tone.WARN
+        },
+        trailingHeader = { TechnicalBadge("MODE", if (wm.workModeOn) "ON" else "OFF") },
+    ) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            StatusChip(heyBobLabel(wm), heyBobTone(wm))
+            StatusChip(if (glasses.ok) "Glasses: connected" else "Glasses: not connected", if (glasses.ok) Tone.OK else Tone.WARN)
+            StatusChip("AI mode: ${mode.mode.label}", mode.tone())
+            StatusChip(vm.mediaStatus.label, if (vm.capturing) Tone.WARN else Tone.NEUTRAL)
+        }
+        if (wm.workModeOn) {
+            Text(
+                "Microphone route: " + (wm.route?.label() ?: "Checking…"),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        wm.unavailableReason?.takeIf { wm.phase == WorkPhase.UNAVAILABLE }?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = toneColor(Tone.WARN))
+        }
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (!wm.workModeOn) {
+                SecondaryAction("Enable Work Mode", {
+                    if (vm.workMode.hasMicPermission()) {
+                        vm.workMode.enable()
+                    } else {
+                        permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                    }
+                })
+            } else {
+                if (wm.isActive) {
+                    SecondaryAction("End assistance", { vm.workMode.endAssistance() })
+                } else if (wm.canStartManually) {
+                    SecondaryAction("Start assistance", {
+                        if (vm.workMode.startAssistance()) onStartAssistance()
+                    })
+                }
+                SecondaryAction("Disable Work Mode", { vm.workMode.disable() })
+            }
+        }
+        Text(
+            "Work Mode never records or uploads idle audio. Custom \"Hey Bob\" listening needs a wake-word " +
+                "engine that hasn't been selected yet, so assistance starts from the button for now.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private fun heyBobLabel(wm: WorkModeState): String {
+    return when (wm.phase) {
+        WorkPhase.DISABLED -> "Hey Bob: off"
+        WorkPhase.ARMING -> "Hey Bob: starting…"
+        WorkPhase.ARMED -> if (wm.heyBobArmed) "Hey Bob: armed" else "Hey Bob: unavailable"
+        WorkPhase.WAKE_DETECTED -> "Hey Bob: heard you"
+        WorkPhase.ACTIVE -> if (wm.trigger == ActivationTrigger.MANUAL) {
+            "Assistance active (started manually)"
+        } else {
+            "Assistance active"
+        }
+        WorkPhase.IDLE_TIMEOUT -> "Hey Bob: re-arming…"
+        WorkPhase.UNAVAILABLE -> "Hey Bob: unavailable"
+    }
+}
+
+private fun heyBobTone(wm: WorkModeState): Tone = when {
+    !wm.workModeOn -> Tone.NEUTRAL
+    wm.heyBobArmed || wm.isActive -> Tone.OK
+    else -> Tone.WARN
+}
+
+@Composable
+private fun WorkModeSettingsCard(vm: BobAiViewModel) {
+    val wm by vm.workModeState.collectAsStateWithLifecycle()
+    SectionCard(
+        title = "Work Mode & Hey Bob",
+        accentTone = Tone.WARN,
+        trailingHeader = { TechnicalBadge("WAKE", "NOT INSTALLED") },
+    ) {
+        Text("Wake-word engine: ${vm.workMode.engineName}", style = MaterialTheme.typography.bodyMedium)
+        Text("Status: ${heyBobLabel(wm)}", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "• Custom \"Hey Bob\" needs an on-device keyword-spotting engine. None has been chosen or tested yet " +
+                "(licence, offline start-up, false triggers, battery).\n" +
+                "• Whether the glasses microphone can be heard continuously, or only the phone microphone, is not " +
+                "yet tested.\n" +
+                "• Meta's own \"Hey Meta\" voice hand-off is a separate option in the Meta SDK. It is not the same " +
+                "as \"Hey Bob\" and is not wired up.\n" +
+                "• Listening will not resume after the app is force-stopped or the phone restarts.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun AssistanceModesCard(vm: BobAiViewModel) {
+    val modes by vm.assistanceModes.collectAsStateWithLifecycle()
+    SectionCard(
+        title = "Assistance modes",
+        trailingHeader = { TechnicalBadge("READY", "${modes.count { it.available }}/${modes.size}") },
+    ) {
+        modes.forEach { m ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                StatusChip(
+                    m.mode.label + if (m.available) " — available" else " — unavailable",
+                    if (m.available) Tone.OK else Tone.NEUTRAL,
+                )
+                Text(m.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun KnowledgeSyncCard() {
+    SectionCard(
+        title = "Knowledge sync",
+        accentTone = Tone.WARN,
+        trailingHeader = { TechnicalBadge("SOURCE", "NONE") },
+    ) {
+        StatusChip("No sync source connected", Tone.WARN)
+        Text(
+            "Packs in the Library are simulated mock packs. Verified pack installs are built (each file is " +
+                "checked against the approved manifest, the switch is atomic, and the last good version is kept), " +
+                "but no business folder, server, or repository is connected yet.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SecondaryAction("Sync now", {}, enabled = false)
     }
 }

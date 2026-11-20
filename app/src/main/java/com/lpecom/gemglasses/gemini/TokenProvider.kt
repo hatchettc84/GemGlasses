@@ -13,12 +13,12 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Fetches an ephemeral Gemini Live token from the backend Worker, authenticating with this phone's device key when paired, else the shared app secret.
- */
 /** This phone was removed by an admin; it must be paired again before voice works. */
 class DeviceRemovedException : Exception("This phone was removed. Ask your admin to pair it again.")
 
+/**
+ * Fetches an ephemeral Gemini Live token from the backend Worker, authenticating with this phone's device key when paired, else the shared app secret.
+ */
 @Singleton
 class TokenProvider internal constructor(
     private val client: OkHttpClient,

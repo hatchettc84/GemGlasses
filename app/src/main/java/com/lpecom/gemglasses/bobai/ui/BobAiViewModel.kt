@@ -198,10 +198,16 @@ class BobAiViewModel @Inject constructor(
     private val _pairing = MutableStateFlow(PairingUi())
     val pairing: StateFlow<PairingUi> = _pairing
 
+    /** Bumped by pairPhone/unpairPhone so an in-flight refreshPairing can tell its read is stale. */
+    private val pairingGeneration = java.util.concurrent.atomic.AtomicInteger()
+
     /** Re-reads the stored pairing off the main thread (the token provider may have marked this phone removed). */
     fun refreshPairing() {
+        val gen = pairingGeneration.get()
         viewModelScope.launch {
             val (pairing, removed) = withContext(Dispatchers.IO) { deviceKeys.get() to deviceKeys.wasRemoved() }
+            // A pair/unpair finished while we were reading: our result is stale.
+            if (pairingGeneration.get() != gen) return@launch
             val current = _pairing.value
             if (current.busy) return@launch
             _pairing.value = when {
@@ -216,8 +222,9 @@ class BobAiViewModel @Inject constructor(
     fun pairPhone(code: String) {
         if (_pairing.value.busy) return
         _pairing.value = _pairing.value.copy(busy = true, message = null)
+        pairingGeneration.incrementAndGet()
         viewModelScope.launch {
-            _pairing.value = try {
+            val result = try {
                 when (val r = pairingClient.pair(code, android.os.Build.MODEL)) {
                     is com.lpecom.gemglasses.bobai.sync.PairResult.Paired ->
                         PairingUi(paired = true, userName = r.userName, message = "Paired to ${r.userName}.")
@@ -230,13 +237,17 @@ class BobAiViewModel @Inject constructor(
                 Log.w(TAG, "pairing failed unexpectedly", e)
                 PairingUi(message = "Couldn't pair this phone. Try again.")
             }
+            pairingGeneration.incrementAndGet()
+            _pairing.value = result
         }
     }
 
     /** Forgets the device key on this phone. An admin can also remove the phone in the console. */
     fun unpairPhone() {
+        pairingGeneration.incrementAndGet()
         viewModelScope.launch {
             withContext(Dispatchers.IO) { deviceKeys.clear() }
+            pairingGeneration.incrementAndGet()
             _pairing.value = PairingUi(message = "This phone is unpaired. Your admin can also remove it in the console.")
         }
     }

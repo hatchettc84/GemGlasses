@@ -11,6 +11,7 @@ import com.lpecom.gemglasses.audio.BluetoothAudioRouter
 import com.lpecom.gemglasses.audio.MicStreamer
 import com.lpecom.gemglasses.audio.SpeakerSink
 import com.lpecom.gemglasses.bobai.data.BobAiController
+import com.lpecom.gemglasses.gemini.DeviceRemovedException
 import com.lpecom.gemglasses.gemini.SessionConfig
 import com.lpecom.gemglasses.gemini.SessionEvent
 import com.lpecom.gemglasses.gemini.SessionKeeper
@@ -233,7 +234,14 @@ class BobVoiceAssistant @Inject constructor(
                 is SessionEvent.GoingAway -> _state.update { it.copy(status = VoiceStatus.RECONNECTING) }
                 is SessionEvent.Closed -> {
                     Log.w(TAG, "session closed: ${event.error?.message}")
-                    _state.update { it.copy(status = VoiceStatus.RECONNECTING, lastError = describe(event.error)) }
+                    if (event.error is DeviceRemovedException) {
+                        // The session loop has ended for good: release mic, speaker and routing, go idle,
+                        // and keep the message so the UI explains why and start() works again later.
+                        stop()
+                        _state.update { it.copy(lastError = event.error.message) }
+                    } else {
+                        _state.update { it.copy(status = VoiceStatus.RECONNECTING, lastError = describe(event.error)) }
+                    }
                 }
             }
         }

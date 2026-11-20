@@ -20,6 +20,8 @@ data class SessionConfig(
     val systemInstruction: String,
     val voiceName: String,
     val languageCode: String,
+    /** Tools for this session; null = the app's legacy [ToolRegistry] tools. */
+    val tools: List<com.lpecom.gemglasses.gemini.protocol.Tool>? = null,
 )
 
 /**
@@ -45,6 +47,9 @@ class SessionKeeper @Inject constructor(
     @Volatile private var resumeHandle: String? = null
     private var loop: Job? = null
 
+    /** True while a session loop (connected or reconnecting) is running. */
+    val isRunning: Boolean get() = loop?.isActive == true
+
     fun start(scope: CoroutineScope, config: SessionConfig) {
         if (loop?.isActive == true) return
         resumeHandle = null
@@ -60,6 +65,7 @@ class SessionKeeper @Inject constructor(
 
     fun sendAudio(pcm: ByteArray) = current?.sendAudio(pcm) ?: Unit
     fun sendFrame(jpeg: ByteArray) = current?.sendFrame(jpeg) ?: Unit
+    fun sendText(text: String) = current?.sendText(text) ?: Unit
     fun sendToolResponses(responses: List<FunctionResponse>) =
         current?.sendToolResponses(responses) ?: Unit
 
@@ -77,7 +83,7 @@ class SessionKeeper @Inject constructor(
                     systemInstruction = config.systemInstruction,
                     voiceName = config.voiceName,
                     languageCode = config.languageCode,
-                    liveTools = toolRegistry.asLiveTools(),
+                    liveTools = config.tools ?: toolRegistry.asLiveTools(),
                     resumeHandle = resumeHandle,
                 ).also { it.resumeCallback = { handle -> resumeHandle = handle } }
             } catch (e: Exception) {
@@ -104,7 +110,9 @@ class SessionKeeper @Inject constructor(
                 }
                 // Never forward the raw Closed of a resumable reconnect as a
                 // hard close to the UI; only surface Closed when we truly stop.
-                if (event !is SessionEvent.Closed) _events.emit(event)
+                // Error closes are surfaced (the loop still reconnects) so the UI
+                // can say why, e.g. a bad token or a retired model id.
+                if (event !is SessionEvent.Closed || event.error != null) _events.emit(event)
             }
 
             current = null

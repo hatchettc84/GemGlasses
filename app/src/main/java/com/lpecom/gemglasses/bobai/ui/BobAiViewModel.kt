@@ -5,7 +5,6 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -18,6 +17,7 @@ import com.lpecom.gemglasses.bobai.data.StoreSnapshot
 import com.lpecom.gemglasses.bobai.domain.ModeResolver
 import com.lpecom.gemglasses.bobai.domain.ModeStatus
 import com.lpecom.gemglasses.bobai.live.AssistanceFacts
+import com.lpecom.gemglasses.bobai.live.BobVoiceAssistant
 import com.lpecom.gemglasses.bobai.live.AssistanceModes
 import com.lpecom.gemglasses.bobai.live.MediaStatus
 import com.lpecom.gemglasses.bobai.live.ModeAvailability
@@ -51,7 +51,20 @@ class BobAiViewModel @Inject constructor(
     private val glassesManager: GlassesManager,
     private val cameraSource: GlassesCameraSource,
     val workMode: WorkModeController,
+    val voice: BobVoiceAssistant,
+    val offline: com.lpecom.gemglasses.bobai.offline.OfflineAssistant,
 ) : AndroidViewModel(application) {
+
+    /** Loads the on-device model (pushed with adb for the spike) and runs its self-test. */
+    fun loadOfflineModel() {
+        viewModelScope.launch { offline.load() }
+    }
+
+    /** Asks the on-device path: manual search first, the model only rephrases the excerpt. */
+    fun askOffline(question: String) {
+        if (question.isBlank() || offline.state.value.busy) return
+        viewModelScope.launch { offline.answer(question.trim()) }
+    }
 
     /**
      * Hardware check: runs a 5-second camera burst, saves the first frame to
@@ -172,9 +185,10 @@ class BobAiViewModel @Inject constructor(
     private val _online = MutableStateFlow(currentlyOnline())
     val online: StateFlow<Boolean> = _online
 
-    val mode: StateFlow<ModeStatus> = combine(_online, controller.state) { net, s ->
+    val mode: StateFlow<ModeStatus> = combine(_online, controller.state, offline.state) { net, s, o ->
         val now = System.currentTimeMillis()
-        ModeResolver.resolve(net, s.packs.count { it.isUsable(now) }, localModelValidated = false)
+        // Only a loaded model that passed its grounding self-test counts.
+        ModeResolver.resolve(net, s.packs.count { it.isUsable(now) }, localModelValidated = o.validated)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ModeResolver.resolve(_online.value, 0, false))
 
     val glasses: StateFlow<GlassesStatus> =
@@ -197,19 +211,27 @@ class BobAiViewModel @Inject constructor(
 
     /** Addendum §5 assistance modes, from facts only. */
     val assistanceModes: StateFlow<List<ModeAvailability>> =
-        combine(_online, controller.state, glasses) { net, s, g ->
+        combine(_online, controller.state, glasses, offline.state) { net, s, g, o ->
             val now = System.currentTimeMillis()
             AssistanceModes.resolve(
                 AssistanceFacts(
                     online = net,
                     glassesConnected = g.ok,
                     usableReferencePacks = s.packs.count { it.isUsable(now) },
+                    bobAiVoiceProviderWired = voice.configured,
+                    liveViewProviderWired = voice.configured,
+                    localModelValidated = o.validated,
                 ),
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** Camera media status. Nothing is ever sent to an AI or recorded yet. */
-    val mediaStatus: MediaStatus get() = if (capturing) MediaStatus.LOCAL_CAPTURE else MediaStatus.CAMERA_OFF
+    /** Camera media status. Live view (Gemini) wins over a local capture; nothing is recorded. */
+    val mediaStatus: MediaStatus
+        get() = when {
+            voice.state.value.media == MediaStatus.CLOUD_TRANSMISSION -> MediaStatus.CLOUD_TRANSMISSION
+            capturing -> MediaStatus.LOCAL_CAPTURE
+            else -> MediaStatus.CAMERA_OFF
+        }
 
     // UI state that must survive fold/unfold (configuration change) — held here, not in composables.
     var draftInput by mutableStateOf("")
@@ -225,27 +247,30 @@ class BobAiViewModel @Inject constructor(
     }
 
     private val connectivity = application.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    // Track only the system default network and trust the capabilities its
+    // callback delivers. Listening to every network and re-reading
+    // activeNetwork on each event could latch "offline" when a secondary
+    // network (cellular, VPN) dropped while the default was switching.
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) { _online.value = currentlyOnline() }
-        override fun onLost(network: Network) { _online.value = currentlyOnline() }
-        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) { _online.value = currentlyOnline() }
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            _online.value = caps.isOnline()
+        }
+        override fun onLost(network: Network) { _online.value = false }
     }
 
     init {
-        runCatching {
-            connectivity.registerNetworkCallback(
-                NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
-                callback,
-            )
-        }
+        runCatching { connectivity.registerDefaultNetworkCallback(callback) }
+            .onFailure { Log.w("BobAiViewModel", "network callback failed", it) }
     }
 
     private fun currentlyOnline(): Boolean {
         val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return cm.getNetworkCapabilities(cm.activeNetwork)?.isOnline() ?: false
     }
+
+    private fun NetworkCapabilities.isOnline() =
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 
     override fun onCleared() {
         runCatching { connectivity.unregisterNetworkCallback(callback) }

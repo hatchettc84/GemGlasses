@@ -16,7 +16,8 @@ export interface Env {
 }
 
 const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
-const LIVE_MODEL = "models/gemini-2.0-flash-live-001";
+// Keep in sync with Models.GEMINI_LIVE_MODEL in the app.
+const LIVE_MODEL = "models/gemini-3.8-live";
 const GROUNDING_MODEL = "gemini-2.5-flash";
 
 export default {
@@ -61,10 +62,17 @@ async function mintToken(env: Env): Promise<Response> {
     expireTime: new Date(now + 30 * 60_000).toISOString(),
     newSessionExpireTime: new Date(now + 2 * 60_000).toISOString(),
     uses: 1,
-    liveConnectConstraints: {
+    // REST name is bidiGenerateContentSetup ("liveConnectConstraints" is the
+    // SDK name and is rejected by the REST API). Verified against the API's
+    // own schema validation on 2026-11-18.
+    bidiGenerateContentSetup: {
       model: LIVE_MODEL,
-      config: { responseModalities: ["AUDIO"] },
+      generationConfig: { responseModalities: ["AUDIO"] },
     },
+    // Without a mask the token's setup REPLACES the app's setup entirely,
+    // dropping its system instruction, tools and voice. Lock only these.
+    // sessionResumption stays out so the app's resume handle survives.
+    fieldMask: "model,generationConfig.responseModalities",
   };
 
   const res = await fetch(

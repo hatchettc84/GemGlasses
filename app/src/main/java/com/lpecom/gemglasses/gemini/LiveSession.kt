@@ -22,6 +22,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -60,24 +62,31 @@ class LiveSession(
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                socket = webSocket
+                // Setup must be the server's first message. Only expose the
+                // socket to send() afterwards, or mic chunks queued while
+                // connecting go out first and the server closes with 1007.
                 webSocket.send(json.encodeToString(ClientMessage.serializer(), buildSetup()))
+                socket = webSocket
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                handleFrame(bytes.utf8())?.let { trySend(it) }
+                handleFrame(bytes.utf8()).forEach { trySend(it) }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                handleFrame(text)?.let { trySend(it) }
+                handleFrame(text).forEach { trySend(it) }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                Log.i(TAG, "server closing: code=$code reason=${reason.take(200)}")
                 webSocket.close(NORMAL_CLOSURE, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                trySend(SessionEvent.Closed(null))
+                // A non-normal close code carries the server's reason (bad model,
+                // expired token, quota); surface it instead of failing silently.
+                val error = if (code == NORMAL_CLOSURE) null else IllegalStateException("Live API closed ($code): ${reason.take(200)}")
+                trySend(SessionEvent.Closed(error))
                 close()
             }
 
@@ -89,7 +98,6 @@ class LiveSession(
         }
 
         val ws = client.newWebSocket(request, listener)
-        socket = ws
 
         awaitClose {
             ws.close(NORMAL_CLOSURE, "client closing")
@@ -158,7 +166,18 @@ class LiveSession(
             ),
             systemInstruction = Content(parts = listOf(Part(text = systemInstruction))),
             tools = liveTools,
-            realtimeInputConfig = RealtimeInputConfig(activityHandling = "START_OF_ACTIVITY_INTERRUPTS"),
+            realtimeInputConfig = RealtimeInputConfig(
+                // Low start sensitivity: shop noise (fans, compressors, other
+                // voices) shouldn't count as the technician talking. A longer
+                // end-of-speech pause lets them finish a sentence while working.
+                automaticActivityDetection = buildJsonObject {
+                    put("startOfSpeechSensitivity", "START_SENSITIVITY_LOW")
+                    put("endOfSpeechSensitivity", "END_SENSITIVITY_LOW")
+                    put("prefixPaddingMs", 200)
+                    put("silenceDurationMs", 800)
+                },
+                activityHandling = "START_OF_ACTIVITY_INTERRUPTS",
+            ),
             // Empty JSON objects => enable transcription of both directions.
             inputAudioTranscription = EMPTY_OBJECT,
             outputAudioTranscription = EMPTY_OBJECT,
@@ -167,38 +186,45 @@ class LiveSession(
         ),
     )
 
-    private fun handleFrame(raw: String): SessionEvent? {
+    /**
+     * One server frame can carry several things at once (e.g. a transcript
+     * fragment AND an audio chunk), so every part becomes its own event.
+     * Returning only the first dropped audio whenever a transcript rode along.
+     */
+    private fun handleFrame(raw: String): List<SessionEvent> {
         val msg = runCatching { json.decodeFromString(ServerMessage.serializer(), raw) }
             .getOrElse {
                 Log.w(TAG, "unparsed frame: ${raw.take(120)}")
-                return null
+                return emptyList()
             }
+        val events = mutableListOf<SessionEvent>()
 
-        msg.setupComplete?.let { return SessionEvent.Ready }
-        msg.goAway?.let { return SessionEvent.GoingAway(it.timeLeft) }
-        msg.toolCallCancellation?.let { return SessionEvent.ToolCancelled(it.ids) }
+        msg.setupComplete?.let { events += SessionEvent.Ready }
+        msg.goAway?.let { events += SessionEvent.GoingAway(it.timeLeft) }
+        msg.toolCallCancellation?.let { events += SessionEvent.ToolCancelled(it.ids) }
         msg.toolCall?.let {
-            if (it.functionCalls.isNotEmpty()) return SessionEvent.ToolInvocation(it.functionCalls)
+            if (it.functionCalls.isNotEmpty()) events += SessionEvent.ToolInvocation(it.functionCalls)
         }
         msg.sessionResumptionUpdate?.let { update ->
             if (update.resumable && update.newHandle != null) {
-                // Surface via a synthetic event? Handle stored by SessionKeeper
-                // which observes the raw stream. Kept out of the sealed set to
-                // avoid leaking protocol detail; SessionKeeper hooks resume().
+                // Handle is stored by SessionKeeper via this hook, kept out of
+                // the sealed event set to avoid leaking protocol detail.
                 resumeCallback?.invoke(update.newHandle)
             }
         }
 
         msg.serverContent?.let { sc ->
-            sc.interrupted?.takeIf { it }?.let { return SessionEvent.Interrupted }
-            sc.inputTranscription?.text?.let { return SessionEvent.Transcript(it, fromUser = true) }
-            sc.outputTranscription?.text?.let { return SessionEvent.Transcript(it, fromUser = false) }
-            sc.modelTurn?.parts?.firstNotNullOfOrNull { it.inlineData }?.let { blob ->
-                return SessionEvent.AudioChunk(Base64.decode(blob.data, Base64.NO_WRAP))
+            if (sc.interrupted == true) events += SessionEvent.Interrupted
+            sc.inputTranscription?.text?.let { events += SessionEvent.Transcript(it, fromUser = true) }
+            sc.modelTurn?.parts?.forEach { part ->
+                part.inlineData?.let { blob ->
+                    events += SessionEvent.AudioChunk(Base64.decode(blob.data, Base64.NO_WRAP))
+                }
             }
-            sc.turnComplete?.takeIf { it }?.let { return SessionEvent.TurnComplete }
+            sc.outputTranscription?.text?.let { events += SessionEvent.Transcript(it, fromUser = false) }
+            if (sc.turnComplete == true) events += SessionEvent.TurnComplete
         }
-        return null
+        return events
     }
 
     /** SessionKeeper registers here to capture resumption handles. */

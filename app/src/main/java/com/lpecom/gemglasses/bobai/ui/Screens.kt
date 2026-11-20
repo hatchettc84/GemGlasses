@@ -75,6 +75,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.lpecom.gemglasses.BuildConfig
 import com.lpecom.gemglasses.bobai.data.MockContent
+import com.lpecom.gemglasses.bobai.live.MediaStatus
+import com.lpecom.gemglasses.bobai.live.VoiceStatus
 import com.lpecom.gemglasses.bobai.workmode.ActivationTrigger
 import com.lpecom.gemglasses.bobai.workmode.WorkModeState
 import com.lpecom.gemglasses.bobai.workmode.WorkPhase
@@ -230,7 +232,16 @@ fun HomeScreen(vm: BobAiViewModel, nav: NavHostController) {
                     if (usablePacks > 0) "References ready ($usablePacks pack${if (usablePacks == 1) "" else "s"})" else "No usable references",
                     if (usablePacks > 0) Tone.OK else Tone.BAD,
                 )
-                StatusChip("Offline AI not configured", Tone.NEUTRAL)
+                val off by vm.offline.state.collectAsStateWithLifecycle()
+                StatusChip(
+                    off.status.label,
+                    when (off.status) {
+                        com.lpecom.gemglasses.bobai.offline.ModelStatus.READY -> Tone.OK
+                        com.lpecom.gemglasses.bobai.offline.ModelStatus.FAILED,
+                        com.lpecom.gemglasses.bobai.offline.ModelStatus.SELF_TEST_FAILED -> Tone.BAD
+                        else -> Tone.NEUTRAL
+                    },
+                )
             }
             mode.unavailable.forEach {
                 Text(
@@ -581,6 +592,8 @@ private fun WorkflowPane(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item { BobVoiceCard(vm) }
+        item { OfflineAskCard(vm) }
         item {
             SectionCard(
                 title = "Equipment",
@@ -1706,6 +1719,177 @@ private fun CapturedPhoto(vm: BobAiViewModel, ref: String) {
  * "Hey Bob armed" only appears while a detector is running, which today it
  * never is.
  */
+/** Gemini Live voice assistance, with an explicit, time-limited live view (addendum §5). */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BobVoiceCard(vm: BobAiViewModel) {
+    val v by vm.voice.state.collectAsStateWithLifecycle()
+    val glasses by vm.glasses.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun micGranted() = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.RECORD_AUDIO,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun startVoice() { if (micGranted()) vm.voice.start() }
+
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) startVoice() }
+
+    SectionCard(
+        title = "Talk to Bob",
+        accentTone = when {
+            !v.active -> Tone.NEUTRAL
+            v.lastError != null -> Tone.WARN
+            else -> Tone.OK
+        },
+        trailingHeader = { TechnicalBadge("AI", "GEMINI LIVE") },
+    ) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            StatusChip(
+                "Voice: ${v.status.label}",
+                when (v.status) {
+                    VoiceStatus.OFF -> Tone.NEUTRAL
+                    VoiceStatus.CONNECTING, VoiceStatus.RECONNECTING, VoiceStatus.PAUSED -> Tone.WARN
+                    else -> Tone.OK
+                },
+            )
+            StatusChip(
+                v.media.label + if (v.media == MediaStatus.CLOUD_TRANSMISSION) " (${v.framesSent} sent)" else "",
+                if (v.media == MediaStatus.CAMERA_OFF) Tone.NEUTRAL else Tone.WARN,
+            )
+        }
+        if (!vm.voice.configured) {
+            Text(
+                "This build has no token service (GEMGLASSES_BACKEND_URL), so Gemini Live can't connect.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = toneColor(Tone.WARN),
+            )
+        }
+        v.lastError?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = toneColor(Tone.WARN))
+        }
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (!v.active) {
+                PrimaryAction("Start voice", {
+                    if (micGranted()) startVoice() else permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                })
+            } else {
+                SecondaryAction("End voice", { vm.voice.stop() })
+                if (v.status == VoiceStatus.PAUSED) {
+                    SecondaryAction("Resume", { vm.voice.setPaused(false) })
+                } else {
+                    SecondaryAction("Pause", { vm.voice.setPaused(true) })
+                }
+                if (v.media == MediaStatus.CLOUD_TRANSMISSION) {
+                    SecondaryAction("Stop camera", { vm.voice.stopLiveView() })
+                } else {
+                    SecondaryAction("Start live view", { vm.voice.startLiveView() }, enabled = glasses.ok)
+                }
+            }
+        }
+        v.transcript.takeLast(6).forEach { line ->
+            Text(
+                (if (line.fromTechnician) "You: " else "Bob: ") + line.text.trim(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (line.fromTechnician) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Text(
+            "While voice is on, your microphone audio goes to Google Gemini. Live view sends about one glasses " +
+                "frame per second for up to 60 seconds. Nothing is recorded, and the conversation isn't saved " +
+                "to the job. Bob only states facts from approved manuals; always verify with the procedure and " +
+                "your meter.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Offline AI spike: asks the on-device model, which may only rephrase the
+ * approved excerpt that manual search found. The label always says whether the
+ * text is the model's wording or the manual quoted verbatim.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OfflineAskCard(vm: BobAiViewModel) {
+    val o by vm.offline.state.collectAsStateWithLifecycle()
+    var question by rememberSaveable { mutableStateOf("") }
+    val ready = o.status == com.lpecom.gemglasses.bobai.offline.ModelStatus.READY
+
+    SectionCard(
+        title = "Ask Bob offline",
+        accentTone = if (ready) Tone.OK else Tone.NEUTRAL,
+        trailingHeader = { TechnicalBadge("ON-DEVICE", o.backend ?: "NO MODEL") },
+    ) {
+        StatusChip(
+            o.status.label,
+            when (o.status) {
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.READY -> Tone.OK
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.FAILED,
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.SELF_TEST_FAILED -> Tone.BAD
+                else -> Tone.NEUTRAL
+            },
+        )
+        o.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (o.status) {
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.NO_MODEL ->
+                    SecondaryAction("Check for model", { vm.offline.refreshPresence() })
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.LOADING -> Unit
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.READY -> Unit
+                else -> SecondaryAction("Load model", { vm.loadOfflineModel() })
+            }
+        }
+        OutlinedTextField(
+            value = question,
+            onValueChange = { question = it },
+            label = { Text("Question about this equipment") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        PrimaryAction(
+            if (o.busy) "Thinking on-device…" else "Ask",
+            { vm.askOffline(question) },
+            enabled = question.isNotBlank() && !o.busy,
+        )
+        o.lastAnswer?.let { a ->
+            val (tag, body) = when (a) {
+                is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.Phrased ->
+                    "On-device model wording, checked against the source" to a.text
+                is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.Verbatim ->
+                    "Quoted from the manual (${a.reason})" to a.excerpt
+                is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.NotInSource ->
+                    "Model: the matching page doesn't answer this" to "Not in the approved manual. Check the manual or escalate."
+                is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.NoAnswer -> "No approved source" to a.message
+            }
+            StatusChip(tag, if (a is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.Phrased) Tone.OK else Tone.NEUTRAL)
+            Text(body, style = MaterialTheme.typography.bodyLarge)
+            a.citations.forEach { c ->
+                Text("Source: ${c.label()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            o.lastLatencyMs?.let {
+                Text("Answered in ${it} ms", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Text(
+            "Runs entirely on this phone; nothing is sent anywhere. The model only rewords the manual page that " +
+                "search found and is checked before it's shown; if the check fails you see the manual text itself. " +
+                "Only the manual excerpt is saved to the job.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
@@ -1742,7 +1926,7 @@ private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
             StatusChip(heyBobLabel(wm), heyBobTone(wm))
             StatusChip(if (glasses.ok) "Glasses: connected" else "Glasses: not connected", if (glasses.ok) Tone.OK else Tone.WARN)
             StatusChip("AI mode: ${mode.mode.label}", mode.tone())
-            StatusChip(vm.mediaStatus.label, if (vm.capturing) Tone.WARN else Tone.NEUTRAL)
+            StatusChip(vm.mediaStatus.label, if (vm.mediaStatus != MediaStatus.CAMERA_OFF) Tone.WARN else Tone.NEUTRAL)
         }
         if (wm.workModeOn) {
             Text(

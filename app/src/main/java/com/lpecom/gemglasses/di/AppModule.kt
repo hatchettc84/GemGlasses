@@ -83,4 +83,7 @@ object AppModule {
 abstract class BindsModule {
     @Binds
     abstract fun visionController(bridge: VisionBridge): VisionController
+
+    @Binds
+    abstract fun deviceKeyStore(impl: com.lpecom.gemglasses.bobai.sync.KeystoreDeviceKeyStore): com.lpecom.gemglasses.bobai.sync.DeviceKeyStore
 }

@@ -68,6 +68,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1596,6 +1597,7 @@ fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
             WorkModeSettingsCard(vm)
             AssistanceModesCard(vm)
             KnowledgeSyncCard()
+            OfficeConsoleCard(vm)
             SectionCard(
                 title = "Hardware",
                 accentTone = if (glasses.ok) Tone.OK else Tone.WARN,
@@ -1663,6 +1665,46 @@ fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
                 Text("Window: ${config.screenWidthDp}×${config.screenHeightDp} dp · layout ${if (LocalExpanded.current) "expanded (two-pane)" else "compact (single-pane)"}", fontFamily = FontFamily.Monospace)
             }
         }
+    }
+}
+
+@Composable
+private fun OfficeConsoleCard(vm: BobAiViewModel) {
+    val pairing by vm.pairing.collectAsStateWithLifecycle()
+    var code by rememberSaveable { mutableStateOf("") }
+    SectionCard(
+        title = "Office console",
+        accentTone = if (pairing.paired) Tone.OK else Tone.WARN,
+        trailingHeader = { TechnicalBadge("SYNC", if (pairing.paired) "PAIRED" else "NOT PAIRED") },
+    ) {
+        if (pairing.paired) {
+            StatusChip("Paired to ${pairing.userName}", Tone.OK)
+            Text(
+                "This phone signs in to BobAI with its own key. Jobs and manuals will come from the office console.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SecondaryAction("Unpair this phone", { vm.unpairPhone() })
+        } else {
+            Text(
+                "Ask your admin for a 6-digit pairing code from the BobAI console, then enter it here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it.filter(Char::isDigit).take(6) },
+                label = { Text("Pairing code") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            )
+            SecondaryAction(
+                if (pairing.busy) "Pairing…" else "Pair this phone",
+                { vm.pairPhone(code) },
+                enabled = !pairing.busy && code.length == 6,
+            )
+        }
+        pairing.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
 }
 

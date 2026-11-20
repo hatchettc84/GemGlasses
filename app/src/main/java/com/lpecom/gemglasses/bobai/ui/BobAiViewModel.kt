@@ -44,6 +44,14 @@ import javax.inject.Inject
 /** Truthful glasses status. Mock builds never claim real hardware is connected. */
 data class GlassesStatus(val label: String, val detail: String, val ok: Boolean)
 
+/** Office console pairing as shown in Settings. */
+data class PairingUi(
+    val paired: Boolean = false,
+    val userName: String? = null,
+    val busy: Boolean = false,
+    val message: String? = null,
+)
+
 @HiltViewModel
 class BobAiViewModel @Inject constructor(
     application: Application,
@@ -53,6 +61,8 @@ class BobAiViewModel @Inject constructor(
     val workMode: WorkModeController,
     val voice: BobVoiceAssistant,
     val offline: com.lpecom.gemglasses.bobai.offline.OfflineAssistant,
+    private val pairingClient: com.lpecom.gemglasses.bobai.sync.PairingClient,
+    private val deviceKeys: com.lpecom.gemglasses.bobai.sync.DeviceKeyStore,
 ) : AndroidViewModel(application) {
 
     /** Loads the on-device model (pushed with adb for the spike) and runs its self-test. */
@@ -184,6 +194,29 @@ class BobAiViewModel @Inject constructor(
 
     private val _online = MutableStateFlow(currentlyOnline())
     val online: StateFlow<Boolean> = _online
+
+    private val _pairing = MutableStateFlow(deviceKeys.get().let { PairingUi(paired = it != null, userName = it?.userName) })
+    val pairing: StateFlow<PairingUi> = _pairing
+
+    /** Pairs this phone with the office console using a 6-digit code from an admin. */
+    fun pairPhone(code: String) {
+        if (_pairing.value.busy) return
+        _pairing.value = _pairing.value.copy(busy = true, message = null)
+        viewModelScope.launch {
+            _pairing.value = when (val r = pairingClient.pair(code, android.os.Build.MODEL)) {
+                is com.lpecom.gemglasses.bobai.sync.PairResult.Paired ->
+                    PairingUi(paired = true, userName = r.userName, message = "Paired to ${r.userName}.")
+                is com.lpecom.gemglasses.bobai.sync.PairResult.Rejected -> PairingUi(message = r.message)
+                is com.lpecom.gemglasses.bobai.sync.PairResult.Failed -> PairingUi(message = r.message)
+            }
+        }
+    }
+
+    /** Forgets the device key on this phone. An admin can also remove the phone in the console. */
+    fun unpairPhone() {
+        deviceKeys.clear()
+        _pairing.value = PairingUi(message = "This phone is unpaired. Your admin can also remove it in the console.")
+    }
 
     val mode: StateFlow<ModeStatus> = combine(_online, controller.state, offline.state) { net, s, o ->
         val now = System.currentTimeMillis()

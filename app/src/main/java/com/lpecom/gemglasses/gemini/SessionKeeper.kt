@@ -86,6 +86,11 @@ class SessionKeeper @Inject constructor(
                     liveTools = config.tools ?: toolRegistry.asLiveTools(),
                     resumeHandle = resumeHandle,
                 ).also { it.resumeCallback = { handle -> resumeHandle = handle } }
+            } catch (e: DeviceRemovedException) {
+                // Retrying can't help; surface the message and stop the loop.
+                Log.w(TAG, "phone was removed; not retrying")
+                _events.emit(SessionEvent.Closed(e))
+                return
             } catch (e: Exception) {
                 Log.w(TAG, "token/setup failed, retrying in ${backoffMs}ms", e)
                 _events.emit(SessionEvent.Closed(e))

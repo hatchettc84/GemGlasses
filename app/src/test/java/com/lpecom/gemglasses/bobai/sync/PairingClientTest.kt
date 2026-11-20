@@ -14,8 +14,11 @@ import org.junit.Test
 
 class InMemoryDeviceKeyStore(var stored: DevicePairing? = null) : DeviceKeyStore {
     override fun get() = stored
-    override fun save(pairing: DevicePairing) { stored = pairing }
-    override fun clear() { stored = null }
+    var removed = false
+    override fun save(pairing: DevicePairing) { stored = pairing; removed = false }
+    override fun clear() { stored = null; removed = false }
+    override fun markRemoved() { stored = null; removed = true }
+    override fun wasRemoved() = removed
 }
 
 class PairingClientTest {
@@ -62,5 +65,12 @@ class PairingClientTest {
         server.shutdown()
         val result = client.pair("482913", "SM-F966U")
         assertEquals(PairResult.Failed("Couldn't reach the office console. Check the connection and try again."), result)
+    }
+
+    @Test fun `an unexpected 200 body is a failure and stores nothing`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("<html>Sign in to Wi-Fi</html>"))
+        val result = client.pair("482913", "SM-F966U")
+        assertEquals(PairResult.Failed("The office console sent an unexpected reply. Try again."), result)
+        assertNull(store.stored)
     }
 }

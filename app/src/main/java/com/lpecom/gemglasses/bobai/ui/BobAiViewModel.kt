@@ -195,27 +195,50 @@ class BobAiViewModel @Inject constructor(
     private val _online = MutableStateFlow(currentlyOnline())
     val online: StateFlow<Boolean> = _online
 
-    private val _pairing = MutableStateFlow(deviceKeys.get().let { PairingUi(paired = it != null, userName = it?.userName) })
+    private val _pairing = MutableStateFlow(PairingUi())
     val pairing: StateFlow<PairingUi> = _pairing
+
+    /** Re-reads the stored pairing off the main thread (the token provider may have marked this phone removed). */
+    fun refreshPairing() {
+        viewModelScope.launch {
+            val (pairing, removed) = withContext(Dispatchers.IO) { deviceKeys.get() to deviceKeys.wasRemoved() }
+            val current = _pairing.value
+            if (current.busy) return@launch
+            _pairing.value = when {
+                pairing != null -> PairingUi(paired = true, userName = pairing.userName, message = current.message)
+                removed -> PairingUi(message = REMOVED_MESSAGE)
+                else -> PairingUi(message = current.message.takeIf { current.paired.not() && it != REMOVED_MESSAGE })
+            }
+        }
+    }
 
     /** Pairs this phone with the office console using a 6-digit code from an admin. */
     fun pairPhone(code: String) {
         if (_pairing.value.busy) return
         _pairing.value = _pairing.value.copy(busy = true, message = null)
         viewModelScope.launch {
-            _pairing.value = when (val r = pairingClient.pair(code, android.os.Build.MODEL)) {
-                is com.lpecom.gemglasses.bobai.sync.PairResult.Paired ->
-                    PairingUi(paired = true, userName = r.userName, message = "Paired to ${r.userName}.")
-                is com.lpecom.gemglasses.bobai.sync.PairResult.Rejected -> PairingUi(message = r.message)
-                is com.lpecom.gemglasses.bobai.sync.PairResult.Failed -> PairingUi(message = r.message)
+            _pairing.value = try {
+                when (val r = pairingClient.pair(code, android.os.Build.MODEL)) {
+                    is com.lpecom.gemglasses.bobai.sync.PairResult.Paired ->
+                        PairingUi(paired = true, userName = r.userName, message = "Paired to ${r.userName}.")
+                    is com.lpecom.gemglasses.bobai.sync.PairResult.Rejected -> PairingUi(message = r.message)
+                    is com.lpecom.gemglasses.bobai.sync.PairResult.Failed -> PairingUi(message = r.message)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "pairing failed unexpectedly", e)
+                PairingUi(message = "Couldn't pair this phone. Try again.")
             }
         }
     }
 
     /** Forgets the device key on this phone. An admin can also remove the phone in the console. */
     fun unpairPhone() {
-        deviceKeys.clear()
-        _pairing.value = PairingUi(message = "This phone is unpaired. Your admin can also remove it in the console.")
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { deviceKeys.clear() }
+            _pairing.value = PairingUi(message = "This phone is unpaired. Your admin can also remove it in the console.")
+        }
     }
 
     val mode: StateFlow<ModeStatus> = combine(_online, controller.state, offline.state) { net, s, o ->
@@ -292,6 +315,7 @@ class BobAiViewModel @Inject constructor(
     }
 
     init {
+        refreshPairing()
         runCatching { connectivity.registerDefaultNetworkCallback(callback) }
             .onFailure { Log.w("BobAiViewModel", "network callback failed", it) }
     }
@@ -315,5 +339,6 @@ class BobAiViewModel @Inject constructor(
         const val RECONNECT_SETTLE_MS = 1_500L
         const val RECONNECT_TIMEOUT_MS = 8_000L
         const val TAG = "BobAiViewModel"
+        const val REMOVED_MESSAGE = "This phone was removed. Ask your admin to pair it again."
     }
 }

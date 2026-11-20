@@ -48,6 +48,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -1672,6 +1673,8 @@ fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
 private fun OfficeConsoleCard(vm: BobAiViewModel) {
     val pairing by vm.pairing.collectAsStateWithLifecycle()
     var code by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(Unit) { vm.refreshPairing() }
+    LaunchedEffect(pairing.paired) { if (pairing.paired) code = "" }
     SectionCard(
         title = "Office console",
         accentTone = if (pairing.paired) Tone.OK else Tone.WARN,

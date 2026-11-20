@@ -36,7 +36,7 @@ class KeystoreDeviceKeyStore @Inject constructor(
             json.decodeFromString(DevicePairing.serializer(), plain.decodeToString())
         }.onFailure {
             Log.w(TAG, "stored pairing unreadable; clearing it")
-            clear()
+            prefs.edit().remove(KEY_BLOB).commit()
         }.getOrNull()
     }
 
@@ -44,13 +44,23 @@ class KeystoreDeviceKeyStore @Inject constructor(
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val sealed = cipher.doFinal(json.encodeToString(DevicePairing.serializer(), pairing).encodeToByteArray())
-        prefs.edit().putString(KEY_BLOB, Base64.encodeToString(cipher.iv + sealed, Base64.NO_WRAP)).apply()
+        prefs.edit()
+            .putString(KEY_BLOB, Base64.encodeToString(cipher.iv + sealed, Base64.NO_WRAP))
+            .remove(KEY_REMOVED)
+            .commit()
     }
 
     override fun clear() {
-        prefs.edit().remove(KEY_BLOB).apply()
+        prefs.edit().remove(KEY_BLOB).remove(KEY_REMOVED).commit()
     }
 
+    override fun markRemoved() {
+        prefs.edit().remove(KEY_BLOB).putBoolean(KEY_REMOVED, true).commit()
+    }
+
+    override fun wasRemoved(): Boolean = prefs.getBoolean(KEY_REMOVED, false)
+
+    @Synchronized
     private fun secretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         (keyStore.getKey(ALIAS, null) as? SecretKey)?.let { return it }
@@ -68,6 +78,7 @@ class KeystoreDeviceKeyStore @Inject constructor(
     private companion object {
         const val PREFS = "bobai_device"
         const val KEY_BLOB = "pairing"
+        const val KEY_REMOVED = "removed"
         const val ALIAS = "bobai_device_pairing"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"

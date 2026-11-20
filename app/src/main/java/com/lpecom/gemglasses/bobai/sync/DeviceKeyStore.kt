@@ -9,5 +9,9 @@ data class DevicePairing(val deviceId: String, val deviceKey: String, val userNa
 interface DeviceKeyStore {
     fun get(): DevicePairing?
     fun save(pairing: DevicePairing)
+    /** Forgets the key and the removed flag (the user unpaired on purpose). */
     fun clear()
+    /** The console removed this phone: drop the key and remember it, so voice does not fall back to the shared secret. */
+    fun markRemoved()
+    fun wasRemoved(): Boolean
 }

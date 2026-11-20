@@ -10,6 +10,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import java.security.GeneralSecurityException
+import java.security.ProviderException
+import kotlinx.serialization.SerializationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -60,6 +63,14 @@ class PairingClient internal constructor(
             }
         } catch (e: IOException) {
             PairResult.Failed("Couldn't reach the office console. Check the connection and try again.")
+        } catch (e: SerializationException) {
+            PairResult.Failed("The office console sent an unexpected reply. Try again.")
+        } catch (e: IllegalArgumentException) {
+            PairResult.Failed("The office console sent an unexpected reply. Try again.")
+        } catch (e: GeneralSecurityException) {
+            PairResult.Failed("This phone couldn't store its key. Try again.")
+        } catch (e: ProviderException) {
+            PairResult.Failed("This phone couldn't store its key. Try again.")
         }
     }
 

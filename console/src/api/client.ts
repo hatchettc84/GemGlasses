@@ -11,22 +11,32 @@ export class ApiError extends Error {
 /** Calls the console API. Errors carry the server's plain-language message. */
 export async function apiFetch<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const hasBody = init.body !== undefined;
-  const res = await fetch(`/api/admin${path}`, {
-    method: init.method ?? "GET",
-    headers: hasBody ? { "content-type": "application/json" } : undefined,
-    body: hasBody ? JSON.stringify(init.body) : undefined,
-    credentials: "same-origin",
-  });
-  const text = await res.text();
+  let res: Response;
+  try {
+    res = await fetch(`/api/admin${path}`, {
+      method: init.method ?? "GET",
+      headers: hasBody ? { "content-type": "application/json" } : undefined,
+      body: hasBody ? JSON.stringify(init.body) : undefined,
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError(0, "network_error", "Couldn't reach the server. Check your connection and try again.");
+  }
+  const text = await res.text().catch(() => "");
   let data: unknown = null;
+  let parsed = false;
   try {
     data = text ? JSON.parse(text) : null;
+    parsed = text !== "";
   } catch {
     data = null;
   }
   if (!res.ok) {
     const err = (data ?? {}) as { error?: string; message?: string };
     throw new ApiError(res.status, err.error ?? "http_error", err.message ?? `The request failed (${res.status}). Try again.`);
+  }
+  if (!parsed) {
+    throw new ApiError(res.status, "bad_response", "The server sent a reply the console couldn't read. Refresh the page and sign in again.");
   }
   return data as T;
 }

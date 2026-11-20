@@ -19,14 +19,14 @@ export function PeoplePage() {
       <h1>People and phones</h1>
       <p className="muted">Signed in as {me.data.email} ({me.data.role})</p>
       {!isAdmin ? (
-        <p role="alert">Only admins can manage people and phones.</p>
+        <p role="alert">Only admins can manage people and phones. Ask an admin if you need access.</p>
       ) : (
         <>
           <AddPersonForm />
           <h2>People</h2>
-          {users.error ? <p role="alert">{message(users.error)}</p> : <PeopleTable users={users.data?.users ?? []} />}
+          {users.error ? <p role="alert">{message(users.error)}</p> : users.isPending ? <p>Loading…</p> : <PeopleTable users={users.data?.users ?? []} />}
           <h2>Paired phones</h2>
-          {devices.error ? <p role="alert">{message(devices.error)}</p> : <DevicesTable devices={devices.data?.devices ?? []} />}
+          {devices.error ? <p role="alert">{message(devices.error)}</p> : devices.isPending ? <p>Loading…</p> : <DevicesTable devices={devices.data?.devices ?? []} />}
         </>
       )}
     </section>
@@ -81,7 +81,7 @@ function PeopleTable({ users }: { users: User[] }) {
       )}
       {issue.error && <p role="alert">{message(issue.error)}</p>}
       <table>
-        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th /></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th><span className="visually-hidden">Actions</span></th></tr></thead>
         <tbody>
           {users.map((u) => (
             <tr key={u.id}>
@@ -112,7 +112,7 @@ function DevicesTable({ devices }: { devices: Device[] }) {
     <>
       {revoke.error && <p role="alert">{message(revoke.error)}</p>}
       <table>
-        <thead><tr><th>Phone</th><th>Technician</th><th>Paired</th><th>Last seen</th><th /></tr></thead>
+        <thead><tr><th>Phone</th><th>Technician</th><th>Paired</th><th>Last seen</th><th><span className="visually-hidden">Actions</span></th></tr></thead>
         <tbody>
           {devices.map((d) => (
             <tr key={d.id}>

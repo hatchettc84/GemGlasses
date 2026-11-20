@@ -3,7 +3,7 @@ import { TENANT_ID, type AdminUser, type AppEnv, type Env, type Role } from "../
 import { ApiError } from "../lib/errors";
 import { auditStmt, SYSTEM_ACTOR } from "../lib/audit";
 import { nowIso, ulid } from "../lib/ids";
-import { accessKeys, verifyAccessJwt } from "./access-jwt";
+import { accessKeys, normalizeTeamDomain, verifyAccessJwt } from "./access-jwt";
 
 /** Who is calling: the dev header (dev only) or a verified Cloudflare Access JWT. */
 export async function identityEmail(req: Request, env: Env): Promise<string | null> {
@@ -14,7 +14,8 @@ export async function identityEmail(req: Request, env: Env): Promise<string | nu
   const jwt = req.headers.get("Cf-Access-Jwt-Assertion");
   if (!jwt || !env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) return null;
   try {
-    return await verifyAccessJwt(jwt, accessKeys(env.ACCESS_TEAM_DOMAIN), env.ACCESS_TEAM_DOMAIN, env.ACCESS_AUD);
+    const team = normalizeTeamDomain(env.ACCESS_TEAM_DOMAIN);
+    return await verifyAccessJwt(jwt, accessKeys(team), team, env.ACCESS_AUD);
   } catch (err) {
     console.warn("access jwt rejected", String(err));
     return null;

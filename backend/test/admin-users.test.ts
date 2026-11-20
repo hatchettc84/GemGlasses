@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { identityEmail } from "../src/auth/admin";
+import { actorFromUser, auditStmtIfExists } from "../src/lib/audit";
 import { api, auditActions, BOSS, seedUser } from "./helpers";
 
 const json = (body: unknown) => JSON.stringify(body);
@@ -123,5 +124,33 @@ describe("people API", () => {
     const stored = await env.DB.prepare("SELECT code_hash FROM pairing_codes").all<{ code_hash: string }>();
     expect(stored.results.every((r) => r.code_hash !== body.code)).toBe(true);
     expect((await auditActions()).filter((a) => a === "pairing_code.issued")).toHaveLength(2);
+  });
+});
+
+describe("conditional audit in a batch (stale PATCH mechanism)", () => {
+  const COND = "SELECT 1 FROM users WHERE id = ? AND tenant_id = ? AND updated_at = ?";
+
+  async function run(id: string, expectedOld: string) {
+    const actor = actorFromUser({ id, tenantId: "t_default", email: "x", name: "x", role: "admin" });
+    const next = "2099-01-01T00:00:00.000Z";
+    const [update] = await env.DB.batch([
+      env.DB.prepare("UPDATE users SET role = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND updated_at = ?")
+        .bind("reviewer", next, id, "t_default", expectedOld),
+      auditStmtIfExists(env.DB, COND, [id, "t_default", next], actor, "user.updated", "user", id, null, null),
+    ]);
+    return update.meta.changes;
+  }
+
+  it("writes the audit row when the UPDATE applies", async () => {
+    const id = await seedUser("c1@example.com", "technician");
+    const row = await env.DB.prepare("SELECT updated_at FROM users WHERE id = ?").bind(id).first<{ updated_at: string }>();
+    expect(await run(id, row!.updated_at)).toBe(1);
+    expect(await auditActions()).toEqual(["user.updated"]);
+  });
+
+  it("writes nothing when the UPDATE matches no rows", async () => {
+    const id = await seedUser("c2@example.com", "technician");
+    expect(await run(id, "1999-01-01T00:00:00.000Z")).toBe(0);
+    expect(await auditActions()).toEqual([]);
   });
 });

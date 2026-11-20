@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { isRole, type AppEnv, type Role } from "../env";
 import { requireRole } from "../auth/admin";
 import { ApiError, readJson } from "../lib/errors";
-import { actorFromUser, auditStmt } from "../lib/audit";
+import { actorFromUser, auditStmt, auditStmtIfExists } from "../lib/audit";
 import { nowIso, ulid } from "../lib/ids";
 import { sha256Hex, sixDigitCode } from "../lib/crypto";
 
@@ -95,11 +95,22 @@ adminUsers.patch("/users/:id", requireRole("admin"), async (c) => {
     active: body.active === undefined ? row.active : body.active ? 1 : 0,
     updated_at: nowIso(),
   };
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE users SET role = ?, active = ?, updated_at = ? WHERE id = ? AND updated_at = ?")
-      .bind(next.role, next.active, next.updated_at, id, row.updated_at),
-    auditStmt(c.env.DB, actorFromUser(actor), "user.updated", "user", id, userJson(row), userJson(next)),
+  // The UPDATE only applies if nobody changed the row since we read it; the audit insert
+  // only runs if the UPDATE's new updated_at is on the row. Same batch = same transaction.
+  const [update] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE users SET role = ?, active = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND updated_at = ?",
+    ).bind(next.role, next.active, next.updated_at, id, actor.tenantId, row.updated_at),
+    auditStmtIfExists(
+      c.env.DB,
+      "SELECT 1 FROM users WHERE id = ? AND tenant_id = ? AND updated_at = ?",
+      [id, actor.tenantId, next.updated_at],
+      actorFromUser(actor), "user.updated", "user", id, userJson(row), userJson(next),
+    ),
   ]);
+  if (update.meta.changes === 0) {
+    throw new ApiError(409, "stale", "Someone changed this person since you loaded the page. Reload and try again.");
+  }
   return c.json({ user: userJson(next) });
 });
 
@@ -118,13 +129,16 @@ adminUsers.post("/users/:id/pairing-code", requireRole("admin"), async (c) => {
   // Avoid handing out a code that is already live for someone else.
   let code = sixDigitCode();
   let hash = await sha256Hex(code);
-  for (let i = 0; i < 5; i++) {
-    const clash = await c.env.DB.prepare(
+  const clashes = async () =>
+    (await c.env.DB.prepare(
       "SELECT id FROM pairing_codes WHERE tenant_id = ? AND code_hash = ? AND used_at IS NULL AND expires_at > ?",
-    ).bind(actor.tenantId, hash, nowS).first();
-    if (!clash) break;
+    ).bind(actor.tenantId, hash, nowS).first()) !== null;
+  for (let i = 0; i < 5 && (await clashes()); i++) {
     code = sixDigitCode();
     hash = await sha256Hex(code);
+  }
+  if (await clashes()) {
+    throw new ApiError(503, "code_unavailable", "Couldn't make a unique pairing code. Try again.");
   }
   const expiresAt = new Date(now.getTime() + PAIRING_TTL_MS).toISOString();
 

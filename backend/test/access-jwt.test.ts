@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
-import { verifyAccessJwt } from "../src/auth/access-jwt";
+import { normalizeTeamDomain, verifyAccessJwt } from "../src/auth/access-jwt";
 
 const ISS = "https://team.cloudflareaccess.com";
 const AUD = "aud-123";
@@ -27,5 +27,21 @@ describe("verifyAccessJwt", () => {
   it("rejects a token without an email", async () => {
     const { keys, sign } = await setup();
     await expect(verifyAccessJwt(await sign({}), keys, ISS, AUD)).rejects.toThrow("no email");
+  });
+  it("rejects a token signed with a non-RS256 algorithm", async () => {
+    const { publicKey, privateKey } = await generateKeyPair("ES256");
+    const jwk = { ...(await exportJWK(publicKey)), kid: "e1", alg: "ES256" };
+    const keys = createLocalJWKSet({ keys: [jwk] });
+    const token = await new SignJWT({ email: "a@b.co" }).setProtectedHeader({ alg: "ES256", kid: "e1" })
+      .setIssuer(ISS).setAudience(AUD).setIssuedAt().setExpirationTime("5m").sign(privateKey);
+    await expect(verifyAccessJwt(token, keys, ISS, AUD)).rejects.toThrow();
+  });
+});
+
+describe("normalizeTeamDomain", () => {
+  it("strips trailing slashes and whitespace", () => {
+    expect(normalizeTeamDomain("https://team.cloudflareaccess.com/")).toBe(ISS);
+    expect(normalizeTeamDomain(" https://team.cloudflareaccess.com// ")).toBe(ISS);
+    expect(normalizeTeamDomain(ISS)).toBe(ISS);
   });
 });

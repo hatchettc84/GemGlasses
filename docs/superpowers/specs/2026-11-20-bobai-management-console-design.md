@@ -78,8 +78,7 @@ All tables carry `tenant_id` (single tenant at launch), `created_at`,
 
 - `users`: email (unique per tenant), name, role, active
 - `devices`: user_id, label, key_hash, paired_at, last_seen_at, revoked_at
-- `pairing_codes`: user_id, code_hash, expires_at (10 minutes), attempts,
-  used_at
+- `pairing_codes`: user_id, code_hash, expires_at (10 minutes), used_at
 - `equipment_models`: manufacturer, model
 - `equipment`: model_id, serial, site_name, site_address
 - `documents`: title, revision, status (`draft` | `approved` | `revoked`),
@@ -174,7 +173,9 @@ calls, a small component set (no heavy UI framework), served by Pages.
 - No secrets in the repo; Worker secrets via `wrangler secret` and
   `.dev.vars` (gitignored).
 - Device keys and pairing codes stored only as hashes; pairing codes expire
-  after 10 minutes, are single-use, and allow 5 attempts.
+  after 10 minutes and are single-use. A wrong code matches no row, so
+  attempts are limited per tenant: after 20 wrong codes in 10 minutes,
+  pairing is refused until the window passes.
 - R2 objects are private; downloads use short-lived signed URLs.
 - Every admin and device write is recorded in `audit_log`.
 - Manual text is reference data for Bob, never instructions (existing rule).

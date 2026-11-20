@@ -12,6 +12,8 @@ import type { AppEnv } from "./env";
 import { errorBody, handleError, jsonResponse } from "./lib/errors";
 import { adminAuth } from "./auth/admin";
 import { adminUsers } from "./routes/admin-users";
+import { adminDevices } from "./routes/admin-devices";
+import { deviceApi } from "./routes/device";
 import { legacyAuth, mintToken, searchPlaces } from "./legacy";
 
 const app = new Hono<AppEnv>();
@@ -24,5 +26,7 @@ app.post("/places", legacyAuth, (c) => searchPlaces(c.req.raw, c.env));
 
 app.use("/api/admin/*", adminAuth);
 app.route("/api/admin", adminUsers);
+app.route("/api/admin", adminDevices);
+app.route("/api/device", deviceApi);
 
 export default app;

@@ -52,6 +52,7 @@ adminDevices.post("/devices/:id/revoke", requireRole("admin"), async (c) => {
   const next: DeviceRow = { ...row, revoked_at: now };
   const db = c.env.DB;
   const [updated] = await db.batch([
+    // changes() in the next statement refers to this UPDATE (immediately preceding); verify on remote D1 before release.
     db.prepare("UPDATE devices SET revoked_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL")
       .bind(now, now, id, actor.tenantId),
     auditStmtIfExists(

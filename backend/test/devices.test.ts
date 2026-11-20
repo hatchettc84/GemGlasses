@@ -60,14 +60,33 @@ describe("device pairing", () => {
     expect((await blocked.json()).error).toBe("too_many_attempts");
   });
 
+  it("refused attempts leave no rows, so the lockout ends with the window", async () => {
+    for (let i = 0; i < 20; i++) expect((await pair("000000")).status).toBe(400);
+    for (let i = 0; i < 5; i++) expect((await pair("000000")).status).toBe(429);
+    expect((await auditActions()).filter((a) => a === "device.pair_failed")).toHaveLength(20);
+    const row = await env.DB.prepare("SELECT entity FROM audit_log WHERE action = 'device.pair_failed' LIMIT 1").first<{ entity: string }>();
+    expect(row?.entity).toBe("pair_attempt");
+  });
+
+  it("treats a null or array JSON body as an empty one", async () => {
+    for (const body of ["null", "[]", "7"]) {
+      const res = await api("/api/device/pair", { method: "POST", body });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("invalid_code");
+    }
+    expect((await auditActions()).filter((a) => a === "device.pair_failed")).toHaveLength(3);
+  });
+
   it("holds the failure limit under concurrency", async () => {
     const results = await Promise.all(Array.from({ length: 25 }, () => pair("000000")));
     const statuses = results.map((r) => r.status);
     expect(statuses.filter((s) => s === 400).length).toBeLessThanOrEqual(20);
     expect(statuses.filter((s) => s === 429).length).toBeGreaterThanOrEqual(5);
     expect(statuses.every((s) => s === 400 || s === 429)).toBe(true);
-    const code = await issueCode(await seedUser("t@example.com", "technician"));
-    expect((await pair(code)).status).toBe(429);
+    // Refused attempts compare no code and delete their own row, so a burst may
+    // leave fewer than 20 rows; every compared (400) guess stays recorded.
+    const recorded = (await auditActions()).filter((a) => a === "device.pair_failed").length;
+    expect(recorded).toBe(statuses.filter((s) => s === 400).length);
   });
 
   it("claims a code exactly once under concurrency", async () => {

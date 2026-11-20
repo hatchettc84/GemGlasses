@@ -17,19 +17,24 @@ export const deviceApi = new Hono<AppEnv>();
 // Registered before the auth middleware: pairing is how a phone gets a key.
 deviceApi.post("/pair", async (c) => {
   const db = c.env.DB;
-  const body = await readJson<{ code?: unknown; label?: unknown }>(c);
+  const raw = await readJson<unknown>(c);
+  const body: { code?: unknown; label?: unknown } =
+    raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const code = typeof body.code === "string" ? body.code.replace(/\s/g, "") : "";
   const label = (typeof body.label === "string" ? body.label.trim().slice(0, 80) : "") || "Phone";
 
   // Count the attempt BEFORE comparing the code, so parallel guesses cannot all
   // slip under the limit. The provisional failure row is removed on success.
   const attemptId = ulid();
-  await auditStmt(db, SYSTEM_ACTOR, "device.pair_failed", "pairing_code", attemptId, null, null).run();
+  await auditStmt(db, SYSTEM_ACTOR, "device.pair_failed", "pair_attempt", attemptId, null, null).run();
   const since = new Date(Date.now() - FAILURE_WINDOW_MS).toISOString();
   const failures = await db.prepare(
     "SELECT COUNT(*) AS n FROM audit_log WHERE tenant_id = ? AND action = 'device.pair_failed' AND at > ?",
   ).bind(TENANT_ID, since).first<{ n: number }>();
   if ((failures?.n ?? 0) > MAX_FAILURES) {
+    // Refused attempts leave no row, so the lockout ends when the window passes.
+    await db.prepare("DELETE FROM audit_log WHERE tenant_id = ? AND action = 'device.pair_failed' AND entity_id = ?")
+      .bind(TENANT_ID, attemptId).run();
     throw new ApiError(429, "too_many_attempts", "Too many wrong codes. Wait 10 minutes and try again.");
   }
 
@@ -48,6 +53,7 @@ deviceApi.post("/pair", async (c) => {
   const deviceKey = randomKey();
   const deviceId = ulid();
   const deviceExists = "SELECT 1 FROM devices WHERE id = ?";
+  // changes() below refers to the immediately preceding statement in the batch; verify on remote D1 before release.
   const [claimed] = await db.batch([
     db.prepare("UPDATE pairing_codes SET used_at = ?, updated_at = ? WHERE id = ? AND used_at IS NULL")
       .bind(now, now, match.id),

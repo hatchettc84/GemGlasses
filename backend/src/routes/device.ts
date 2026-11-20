@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { TENANT_ID, type AppEnv } from "../env";
 import { deviceAuth } from "../auth/device";
 import { ApiError, readJson } from "../lib/errors";
-import { auditStmt, SYSTEM_ACTOR } from "../lib/audit";
+import { auditStmt, auditStmtIfExists, SYSTEM_ACTOR } from "../lib/audit";
 import { nowIso, ulid } from "../lib/ids";
 import { randomKey, sha256Hex } from "../lib/crypto";
 
@@ -17,15 +17,19 @@ export const deviceApi = new Hono<AppEnv>();
 // Registered before the auth middleware: pairing is how a phone gets a key.
 deviceApi.post("/pair", async (c) => {
   const db = c.env.DB;
-  const body = await readJson<{ code?: string; label?: string }>(c);
-  const code = (body.code ?? "").replace(/\s/g, "");
-  const label = (body.label ?? "").trim().slice(0, 80) || "Phone";
+  const body = await readJson<{ code?: unknown; label?: unknown }>(c);
+  const code = typeof body.code === "string" ? body.code.replace(/\s/g, "") : "";
+  const label = (typeof body.label === "string" ? body.label.trim().slice(0, 80) : "") || "Phone";
 
+  // Count the attempt BEFORE comparing the code, so parallel guesses cannot all
+  // slip under the limit. The provisional failure row is removed on success.
+  const attemptId = ulid();
+  await auditStmt(db, SYSTEM_ACTOR, "device.pair_failed", "pairing_code", attemptId, null, null).run();
   const since = new Date(Date.now() - FAILURE_WINDOW_MS).toISOString();
   const failures = await db.prepare(
     "SELECT COUNT(*) AS n FROM audit_log WHERE tenant_id = ? AND action = 'device.pair_failed' AND at > ?",
   ).bind(TENANT_ID, since).first<{ n: number }>();
-  if ((failures?.n ?? 0) >= MAX_FAILURES) {
+  if ((failures?.n ?? 0) > MAX_FAILURES) {
     throw new ApiError(429, "too_many_attempts", "Too many wrong codes. Wait 10 minutes and try again.");
   }
 
@@ -38,27 +42,28 @@ deviceApi.post("/pair", async (c) => {
             AND u.active = 1 AND u.role = 'technician'`,
       ).bind(TENANT_ID, await sha256Hex(code), now).first<{ id: string; user_id: string; name: string; email: string }>()
     : null;
-  if (!match) {
-    await auditStmt(db, SYSTEM_ACTOR, "device.pair_failed", "pairing_code", null, null, null).run();
-    throw invalidCode();
-  }
+  if (!match) throw invalidCode();
 
-  const claimed = await db.prepare("UPDATE pairing_codes SET used_at = ?, updated_at = ? WHERE id = ? AND used_at IS NULL")
-    .bind(now, now, match.id).run();
-  if (claimed.meta.changes !== 1) throw invalidCode();
-
+  // Claim, device and audit in one batch; the device exists only if the claim applied.
   const deviceKey = randomKey();
   const deviceId = ulid();
-  await db.batch([
+  const deviceExists = "SELECT 1 FROM devices WHERE id = ?";
+  const [claimed] = await db.batch([
+    db.prepare("UPDATE pairing_codes SET used_at = ?, updated_at = ? WHERE id = ? AND used_at IS NULL")
+      .bind(now, now, match.id),
     db.prepare(
       `INSERT INTO devices (id, tenant_id, user_id, label, key_hash, paired_at, last_seen_at, revoked_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+       SELECT ?, ?, ?, ?, ?, ?, ?, NULL, ?, ? WHERE changes() = 1`,
     ).bind(deviceId, TENANT_ID, match.user_id, label, await sha256Hex(deviceKey), now, now, now, now),
-    auditStmt(db, { type: "device", id: deviceId, tenantId: TENANT_ID }, "device.paired", "device", deviceId, null, {
+    auditStmtIfExists(db, deviceExists, [deviceId], { type: "device", id: deviceId, tenantId: TENANT_ID }, "device.paired", "device", deviceId, null, {
       label,
       userId: match.user_id,
     }),
+    db.prepare(
+      `DELETE FROM audit_log WHERE tenant_id = ? AND action = 'device.pair_failed' AND entity_id = ? AND EXISTS (${deviceExists})`,
+    ).bind(TENANT_ID, attemptId, deviceId),
   ]);
+  if (claimed.meta.changes !== 1) throw invalidCode();
   return c.json({ deviceKey, deviceId, user: { name: match.name, email: match.email } }, 201);
 });
 

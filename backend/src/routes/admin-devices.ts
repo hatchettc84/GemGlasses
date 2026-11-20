@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../env";
 import { requireRole } from "../auth/admin";
 import { ApiError } from "../lib/errors";
-import { actorFromUser, auditStmt } from "../lib/audit";
+import { actorFromUser, auditStmtIfExists } from "../lib/audit";
 import { nowIso } from "../lib/ids";
 
 interface DeviceRow {
@@ -50,9 +50,19 @@ adminDevices.post("/devices/:id/revoke", requireRole("admin"), async (c) => {
 
   const now = nowIso();
   const next: DeviceRow = { ...row, revoked_at: now };
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE devices SET revoked_at = ?, updated_at = ? WHERE id = ?").bind(now, now, id),
-    auditStmt(c.env.DB, actorFromUser(actor), "device.revoked", "device", id, deviceJson(row), deviceJson(next)),
+  const db = c.env.DB;
+  const [updated] = await db.batch([
+    db.prepare("UPDATE devices SET revoked_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL")
+      .bind(now, now, id, actor.tenantId),
+    auditStmtIfExists(
+      db, "SELECT 1 WHERE changes() = 1", [], // true only if the UPDATE above changed a row
+      actorFromUser(actor), "device.revoked", "device", id, deviceJson(row), deviceJson(next),
+    ),
   ]);
+  if (updated.meta.changes !== 1) {
+    // Someone else revoked it first: report the current state, audit nothing.
+    const current = await db.prepare(`${SELECT_DEVICES} AND d.id = ?`).bind(actor.tenantId, id).first<DeviceRow>();
+    return c.json({ device: deviceJson(current ?? next) });
+  }
   return c.json({ device: deviceJson(next) });
 });

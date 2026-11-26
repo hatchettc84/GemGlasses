@@ -419,8 +419,9 @@ fun EquipmentScreen(vm: BobAiViewModel, nav: NavHostController) {
                 if (model.isNotBlank()) {
                     val known = vm.controller.resolver.isKnownModel(model)
                     val normalized = vm.controller.resolver.normalizeModel(model)
+                    val knownName = vm.controller.resolver.knownName(model)
                     StatusChip(
-                        if (known) "Known model: ${MockContent.knownModels[normalized]}"
+                        if (known) "Known model: $knownName"
                         else "Unknown model — no approved manual. Reference-only or escalate.",
                         if (known) Tone.OK else Tone.WARN,
                     )
@@ -429,7 +430,7 @@ fun EquipmentScreen(vm: BobAiViewModel, nav: NavHostController) {
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            TechnicalBadge("OEM", MockContent.knownModels[normalized] ?: "—")
+                            TechnicalBadge("OEM", knownName ?: "—")
                             TechnicalBadge("SKU/CAT", "MRO-${normalized}")
                             TechnicalBadge("VOLTAGE", "120V 60Hz")
                         }

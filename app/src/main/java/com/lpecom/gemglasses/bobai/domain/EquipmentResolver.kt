@@ -35,6 +35,9 @@ class EquipmentResolver(
 
     fun isKnownModel(model: String): Boolean = normalizeModel(model) in knownModels()
 
+    /** Display name for a known model (mock or office), or null when unknown. */
+    fun knownName(model: String): String? = knownModels()[normalizeModel(model)]
+
     sealed interface Confirmation {
         data class Confirmed(val equipment: Equipment) : Confirmation
         data class Rejected(val reason: String) : Confirmation

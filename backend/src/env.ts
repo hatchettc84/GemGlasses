@@ -15,6 +15,14 @@ export interface Env {
   ACCESS_AUD?: string;
   /** Becomes the first admin while no admin exists. */
   BOOTSTRAP_ADMIN_EMAIL?: string;
+  /** Self-hosted Plane, e.g. http://127.0.0.1:8095. Plane mode needs this, the key and the slug. */
+  PLANE_BASE_URL?: string;
+  /** Plane personal access token (secret). Never logged or returned. */
+  PLANE_API_KEY?: string;
+  /** Plane workspace slug. */
+  PLANE_WORKSPACE_SLUG?: string;
+  /** Comma-separated Plane project ids; empty = all projects in the workspace. */
+  PLANE_PROJECT_IDS?: string;
 }
 
 export const TENANT_ID = "t_default";

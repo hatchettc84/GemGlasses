@@ -104,3 +104,33 @@ every app build, so any build still holding the shared secret can keep calling
 `/token` and `/places` until that secret is retired. Once every phone is
 paired, unset `TOKEN_APP_SECRET` (`npx wrangler secret delete TOKEN_APP_SECRET`)
 and remove the legacy `X-App-Secret` path from `legacyAuth` and the app.
+
+## Plane (optional job source)
+
+When configured, `GET /api/device/jobs` serves the technician's assigned work
+items from a self-hosted Plane instance (read-only) instead of D1. Technicians
+are matched to Plane members by email. Jobs and sub-items carry ids starting
+with `plane-`; device `PATCH` on those ids returns 409 `managed_in_plane`.
+If Plane cannot be reached the endpoint returns 502 `plane_unavailable`.
+
+Plane mode is on only when all three of these are set; otherwise D1 is used:
+
+| Variable | Notes |
+| --- | --- |
+| `PLANE_BASE_URL` | e.g. `http://127.0.0.1:8095` |
+| `PLANE_API_KEY` | secret; sent as `X-API-Key`, never logged or returned |
+| `PLANE_WORKSPACE_SLUG` | workspace slug from the Plane URL |
+| `PLANE_PROJECT_IDS` | optional, comma-separated; empty = all projects |
+
+Create the key in Plane under Profile settings, Personal access tokens. Then the
+owner adds these lines to `backend/.dev.vars` themselves (do not commit them):
+
+```
+PLANE_BASE_URL=http://127.0.0.1:8095
+PLANE_API_KEY=<token from Plane>
+PLANE_WORKSPACE_SLUG=<slug>
+```
+
+In production use `npx wrangler secret put PLANE_API_KEY` and set the others as vars.
+`GET /api/admin/integrations/plane` reports `{ enabled, workspaceSlug, webUrl }`
+for the console and does not call Plane.

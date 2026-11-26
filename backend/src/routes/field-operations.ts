@@ -5,9 +5,19 @@ import { guardedUpdate } from "../lib/audit";
 import { nowIso } from "../lib/ids";
 import { jobSelect } from "./operations";
 import type { DocumentRow } from "./documents";
+import { fetchPlaneJobs, planeConfig, PLANE_ID_PREFIX } from "../lib/plane";
+
+const managedInPlane = () => new ApiError(409, "managed_in_plane", "This job is managed in Plane. Update it there.");
 export const fieldOperations = new Hono<AppEnv>();
 fieldOperations.get("/jobs", async (c) => {
   const d = c.get("device");
+  const plane = planeConfig(c.env);
+  if (plane) {
+    const u = await c.env.DB.prepare("SELECT email, name FROM users WHERE id=? AND tenant_id=?")
+      .bind(d.userId, d.tenantId).first<{ email: string; name: string }>();
+    if (!u) return c.json({ jobs: [], tasks: [] });
+    return c.json(await fetchPlaneJobs(plane, u.email, { id: d.userId, name: u.name, tenantId: d.tenantId }));
+  }
   const [jobs, tasks] = await Promise.all([
     c.env.DB.prepare(
       `${jobSelect} WHERE j.tenant_id=? AND j.assigned_user_id=? ORDER BY j.updated_at DESC LIMIT 500`,
@@ -23,6 +33,7 @@ fieldOperations.get("/jobs", async (c) => {
   return c.json({ jobs: jobs.results, tasks: tasks.results });
 });
 fieldOperations.patch("/tasks/:id", async (c) => {
+  if (planeConfig(c.env) && c.req.param("id").startsWith(PLANE_ID_PREFIX)) throw managedInPlane();
   const d = c.get("device"),
     b = await readJson<Record<string, unknown>>(c),
     id = c.req.param("id");
@@ -46,6 +57,7 @@ fieldOperations.patch("/tasks/:id", async (c) => {
   return c.json({ ok: true });
 });
 fieldOperations.patch("/jobs/:id", async (c) => {
+  if (planeConfig(c.env) && c.req.param("id").startsWith(PLANE_ID_PREFIX)) throw managedInPlane();
   const d = c.get("device"),
     b = await readJson<Record<string, unknown>>(c),
     id = c.req.param("id");

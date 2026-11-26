@@ -32,3 +32,7 @@ node_modules/
 .superpowers/
 console/node_modules/
 console/dist/
+
+# Local tool state
+.claude-flow/
+.kotlin/

@@ -68,3 +68,5 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--surface-
 .code { font-size: 28px; letter-spacing: 4px; font-family: ui-monospace, monospace; color: var(--hazard); }
 [role="alert"] { color: var(--error); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+.page-text { white-space: pre-wrap; max-height: 320px; overflow: auto; font-size: 13px; background: var(--background); padding: 8px; border-radius: 6px; }

@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { useDocuments, useMe, useReviewDocument, useUploadDocument } from "../api/hooks";
+import { Fragment, useEffect, useState, type FormEvent } from "react";
+import { documentFileUrl, useDocumentPages, useDocuments, useMe, useReviewDocument, useUploadDocument } from "../api/hooks";
 import type { ManualDoc } from "../api/types";
 
 const message = (err: unknown) => (err instanceof Error ? err.message : "Something went wrong. Try again.");
@@ -77,6 +77,9 @@ function UploadForm() {
 function DocumentsTable({ docs, canReview }: { docs: ManualDoc[]; canReview: boolean }) {
   const review = useReviewDocument();
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  // Drafts whose extracted text the reviewer has opened: only those can be approved.
+  const [read, setRead] = useState<ReadonlySet<string>>(new Set());
   if (docs.length === 0) return <p className="muted">No manuals yet.</p>;
   return (
     <>
@@ -85,37 +88,79 @@ function DocumentsTable({ docs, canReview }: { docs: ManualDoc[]; canReview: boo
         <thead><tr><th>Title</th><th>Revision</th><th>Models</th><th>Status</th><th><span className="visually-hidden">Actions</span></th></tr></thead>
         <tbody>
           {docs.map((d) => (
-            <tr key={d.id}>
-              <td>{d.title}</td>
-              <td>{d.revision}</td>
-              <td>{d.models.join(", ")}</td>
-              <td>{STATUS_LABEL[d.status]}</td>
-              <td>
-                {canReview && d.status !== "revoked" && (confirming === d.id ? (
-                  <span className="confirm" role="group" aria-label={`Confirm revoking ${d.title}`}>
-                    <span>Revoke {d.title}? Phones stop using it.</span>
-                    <button type="button" className="danger" disabled={review.isPending}
-                      onClick={() => review.mutate({ id: d.id, status: "revoked", version: d.version }, { onSettled: () => setConfirming(null) })}>
-                      Yes, revoke
-                    </button>
-                    <button type="button" className="secondary" onClick={() => setConfirming(null)}>Cancel</button>
-                  </span>
-                ) : (
+            <Fragment key={d.id}>
+              <tr>
+                <td>{d.title}</td>
+                <td>{d.revision}</td>
+                <td>{d.models.join(", ")}</td>
+                <td>{STATUS_LABEL[d.status]}</td>
+                <td>
                   <span className="confirm">
-                    {d.status === "draft" && (
-                      <button type="button" disabled={review.isPending}
-                        onClick={() => review.mutate({ id: d.id, status: "approved", version: d.version })}>
-                        Approve
-                      </button>
-                    )}
-                    <button type="button" className="danger" disabled={review.isPending} onClick={() => setConfirming(d.id)}>Revoke</button>
+                    <button type="button" className="secondary" aria-expanded={open === d.id} aria-controls={`text-${d.id}`}
+                      onClick={() => setOpen(open === d.id ? null : d.id)}>
+                      {open === d.id ? "Hide text" : "View text"}
+                    </button>
+                    <a href={documentFileUrl(d.id)} download={d.filename}>Download original</a>
                   </span>
-                ))}
-              </td>
-            </tr>
+                  {canReview && d.status !== "revoked" && (confirming === d.id ? (
+                    <span className="confirm" role="group" aria-label={`Confirm revoking ${d.title}`}>
+                      <span>Revoke {d.title}? Phones stop using it.</span>
+                      <button type="button" className="danger" disabled={review.isPending}
+                        onClick={() => review.mutate({ id: d.id, status: "revoked", version: d.version }, { onSettled: () => setConfirming(null) })}>
+                        Yes, revoke
+                      </button>
+                      <button type="button" className="secondary" onClick={() => setConfirming(null)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <span className="confirm">
+                      {d.status === "draft" && (
+                        <button type="button" disabled={review.isPending || !read.has(d.id)}
+                          title={read.has(d.id) ? undefined : "Open the text first: approve only what you have read."}
+                          onClick={() => review.mutate({ id: d.id, status: "approved", version: d.version })}>
+                          Approve
+                        </button>
+                      )}
+                      <button type="button" className="danger" disabled={review.isPending} onClick={() => setConfirming(d.id)}>Revoke</button>
+                    </span>
+                  ))}
+                </td>
+              </tr>
+              {open === d.id && (
+                <tr>
+                  <td colSpan={5}>
+                    <DocumentText doc={d} onLoaded={() => setRead((r) => (r.has(d.id) ? r : new Set(r).add(d.id)))} />
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
         </tbody>
       </table>
     </>
+  );
+}
+
+/** The page text Bob will quote, exactly as extracted; reviewers read it before approving. */
+function DocumentText({ doc, onLoaded }: { doc: ManualDoc; onLoaded: () => void }) {
+  const pages = useDocumentPages(doc.id, doc.version);
+  const loaded = pages.isSuccess;
+  useEffect(() => {
+    if (loaded) onLoaded();
+  }, [loaded, onLoaded]);
+  return (
+    <section id={`text-${doc.id}`} className="card" aria-label={`Extracted text of ${doc.title}`}>
+      <h2>Extracted text: {doc.title} rev {doc.revision}</h2>
+      <p className="muted">This is the text Bob will quote. Compare it with the original file before approving.</p>
+      {pages.error ? <p role="alert">{message(pages.error)}</p> : pages.isPending ? <p>Loading text…</p> : (
+        pages.data.pages.length === 0 ? <p className="muted">This document has no extracted text.</p> : (
+          pages.data.pages.map((p) => (
+            <article key={p.number}>
+              <h3>Page {p.number}{p.heading ? ` — ${p.heading}` : ""}</h3>
+              <pre className="page-text">{p.body}</pre>
+            </article>
+          ))
+        )
+      )}
+    </section>
   );
 }

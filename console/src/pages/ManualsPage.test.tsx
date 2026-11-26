@@ -40,6 +40,8 @@ describe("ManualsPage", () => {
     if (url.endsWith("/documents") && method === "GET") return { status: 200, body: { documents: [draft, approved, revoked] } };
     if (url.endsWith("/documents") && method === "POST") return { status: 201, body: { id: "N1", status: "draft" } };
     if (url.includes("/documents/") && method === "PATCH") return { status: 200, body: { ok: true } };
+    if (url.endsWith("/documents/D1/pages") && method === "GET")
+      return { status: 200, body: { id: "D1", title: "Boiler manual", revision: "B", status: "draft", version: 2, pages: [{ number: 4, heading: "Igniter", body: "Torque the igniter to 12 Nm." }] } };
     return { status: 404, body: { error: "not_found", message: "Not found." } };
   };
   const rowOf = async (title: string) => (await screen.findByRole("cell", { name: title })).closest("tr")!;
@@ -61,7 +63,9 @@ describe("ManualsPage", () => {
     const a = within(await rowOf("Pump manual"));
     expect(a.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(a.getByRole("button", { name: "Revoke" })).toBeInTheDocument();
-    expect(within(await rowOf("Old manual")).queryByRole("button")).not.toBeInTheDocument();
+    // A revoked manual can still be read, but not approved or revoked again.
+    const r = within(await rowOf("Old manual"));
+    expect(r.getAllByRole("button").map((b) => b.textContent)).toEqual(["View text"]);
   });
 
   it("uploads a manual as multipart form data", async () => {
@@ -90,12 +94,52 @@ describe("ManualsPage", () => {
     expect(await screen.findByText("This PDF has no text (it may be a scan).")).toBeInTheDocument();
   });
 
-  it("approves a draft with its version", async () => {
+  it("approves a draft with its version after its text was opened", async () => {
     const f = mockApi(handler);
     renderPage();
-    await userEvent.setup().click(within(await rowOf("Boiler manual")).getByRole("button", { name: "Approve" }));
+    const user = userEvent.setup();
+    await user.click(within(await rowOf("Boiler manual")).getByRole("button", { name: "View text" }));
+    await screen.findByText("Torque the igniter to 12 Nm.");
+    await user.click(within(await rowOf("Boiler manual")).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(calls(f, "PATCH", "/documents/D1")).toHaveLength(1));
     expect(JSON.parse(String(calls(f, "PATCH", "/documents/D1")[0][1]?.body))).toEqual({ status: "approved", version: 2 });
+  });
+
+  it("shows a draft's extracted text and keeps Approve off until it is opened", async () => {
+    const f = mockApi(handler);
+    renderPage();
+    const user = userEvent.setup();
+    const row = within(await rowOf("Boiler manual"));
+    expect(row.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(calls(f, "GET", "/documents/D1/pages")).toHaveLength(0);
+    await user.click(row.getByRole("button", { name: "View text" }));
+    const panel = await screen.findByRole("region", { name: "Extracted text of Boiler manual" });
+    expect(await within(panel).findByText("Torque the igniter to 12 Nm.")).toBeInTheDocument();
+    expect(within(panel).getByText("Page 4 — Igniter")).toBeInTheDocument();
+    expect(calls(f, "GET", "/documents/D1/pages")).toHaveLength(1);
+    await waitFor(() => expect(row.getByRole("button", { name: "Approve" })).toBeEnabled());
+    expect(calls(f, "PATCH", "/documents/D1")).toHaveLength(0);
+  });
+
+  it("links each manual's original file through the admin API", async () => {
+    mockApi(handler);
+    renderPage();
+    const link = within(await rowOf("Pump manual")).getByRole("link", { name: "Download original" });
+    expect(link).toHaveAttribute("href", "/api/admin/documents/D2/file");
+  });
+
+  it("shows the server's message when the text cannot be loaded, and Approve stays off", async () => {
+    mockApi((url, init) =>
+      url.endsWith("/documents/D1/pages")
+        ? { status: 404, body: { error: "not_found", message: "Document not found." } }
+        : handler(url, init),
+    );
+    renderPage();
+    const user = userEvent.setup();
+    const row = within(await rowOf("Boiler manual"));
+    await user.click(row.getByRole("button", { name: "View text" }));
+    expect(await screen.findByText("Document not found.")).toBeInTheDocument();
+    expect(row.getByRole("button", { name: "Approve" })).toBeDisabled();
   });
 
   it("asks on the page before revoking, then revokes", async () => {

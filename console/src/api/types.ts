@@ -37,4 +37,7 @@ export interface ManualDoc {
   status: DocStatus;
   version: number;
   size_bytes: number;
+  page_count?: number;
 }
+export interface DocPage { number: number; heading: string; body: string }
+export interface DocPages { id: string; title: string; revision: string; status: DocStatus; version: number; pages: DocPage[] }

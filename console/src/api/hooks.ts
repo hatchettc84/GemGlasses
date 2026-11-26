@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, apiUpload } from "./client";
-import type { Device, DocStatus, Job, JobStatus, ManualDoc, Me, PairingCode, Role, Task, Technician, User } from "./types";
+import type { Device, DocPages, DocStatus, Job, JobStatus, ManualDoc, Me, PairingCode, Role, Task, Technician, User } from "./types";
 
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => apiFetch<Me>("/me") });
 
@@ -76,6 +76,16 @@ export function useSetTaskDone() {
 
 export const useDocuments = (enabled: boolean) =>
   useQuery({ queryKey: ["documents"], queryFn: () => apiFetch<{ documents: ManualDoc[] }>("/documents"), enabled });
+
+/** One document's extracted page text, read only when the reviewer opens it. */
+export const useDocumentPages = (id: string, version: number) =>
+  useQuery({
+    queryKey: ["documents", id, "pages", version],
+    queryFn: () => apiFetch<DocPages>(`/documents/${encodeURIComponent(id)}/pages`),
+  });
+
+/** Same-origin admin URL for the original uploaded file. */
+export const documentFileUrl = (id: string) => `/api/admin/documents/${encodeURIComponent(id)}/file`;
 
 export function useUploadDocument() {
   const qc = useQueryClient();

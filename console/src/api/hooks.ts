@@ -38,6 +38,14 @@ export const useJobs = (enabled: boolean) =>
 export const useTeam = (enabled: boolean) =>
   useQuery({ queryKey: ["team"], queryFn: () => apiFetch<{ technicians: Technician[] }>("/team"), enabled });
 
+export const usePlaneIntegration = (enabled: boolean) =>
+  useQuery({
+    queryKey: ["plane"],
+    queryFn: () => apiFetch<{ enabled: boolean; workspaceSlug: string | null; webUrl: string | null }>("/integrations/plane"),
+    enabled,
+    retry: false,
+  });
+
 export function useCreateJob() {
   const qc = useQueryClient();
   return useMutation({

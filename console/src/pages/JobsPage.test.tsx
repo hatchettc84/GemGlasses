@@ -98,6 +98,32 @@ describe("JobsPage", () => {
     expect(await screen.findByText("This job changed. Refresh before saving.")).toBeInTheDocument();
   });
 
+  it("points to Plane and hides the create form when Plane is enabled", async () => {
+    mockApi((url, init) =>
+      url.endsWith("/integrations/plane")
+        ? { status: 200, body: { enabled: true, workspaceSlug: "acme", webUrl: "https://plane.example.com/acme" } }
+        : handler(url, init),
+    );
+    renderPage();
+    expect(await screen.findByText(/Jobs are managed in Plane\./)).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Open Plane" });
+    expect(link).toHaveAttribute("href", "https://plane.example.com/acme");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.queryByLabelText("Job title")).not.toBeInTheDocument();
+  });
+
+  it("keeps the create form when Plane is disabled", async () => {
+    mockApi((url, init) =>
+      url.endsWith("/integrations/plane")
+        ? { status: 200, body: { enabled: false, workspaceSlug: null, webUrl: null } }
+        : handler(url, init),
+    );
+    renderPage();
+    expect(await screen.findByLabelText("Job title")).toBeInTheDocument();
+    expect(screen.queryByText(/managed in Plane/)).not.toBeInTheDocument();
+  });
+
   it("tells a technician to use their phone", async () => {
     mockApi((url) => (url.endsWith("/me") ? { status: 200, body: { ...admin, role: "technician" } } : { status: 403, body: { error: "forbidden", message: "No." } }));
     renderPage();

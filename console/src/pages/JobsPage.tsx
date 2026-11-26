@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useAddTask, useCreateJob, useJobs, useMe, useSetTaskDone, useTeam, useUpdateJob } from "../api/hooks";
+import { useAddTask, useCreateJob, useJobs, useMe, usePlaneIntegration, useSetTaskDone, useTeam, useUpdateJob } from "../api/hooks";
 import type { Job, JobStatus, Task, Technician } from "../api/types";
 
 const message = (err: unknown) => (err instanceof Error ? err.message : "Something went wrong. Try again.");
@@ -12,6 +12,8 @@ export function JobsPage() {
   const canEdit = role === "admin" || role === "dispatcher";
   const jobs = useJobs(canView);
   const team = useTeam(canEdit);
+  const plane = usePlaneIntegration(canView);
+  const planeEnabled = plane.data?.enabled === true;
 
   if (me.isPending) return <p>Loading…</p>;
   if (me.error) return <p role="alert">{message(me.error)}</p>;
@@ -20,7 +22,15 @@ export function JobsPage() {
   return (
     <section>
       <h1>Jobs</h1>
-      {canEdit ? <NewJobForm technicians={team.data?.technicians ?? []} /> : <p className="muted">You can view jobs but not change them.</p>}
+      {planeEnabled && (
+        <p className="card">
+          Jobs are managed in Plane.
+          {plane.data?.webUrl && (
+            <>{" "}<a href={plane.data.webUrl} target="_blank" rel="noopener noreferrer">Open Plane</a></>
+          )}
+        </p>
+      )}
+      {planeEnabled ? null : canEdit ? <NewJobForm technicians={team.data?.technicians ?? []} /> : <p className="muted">You can view jobs but not change them.</p>}
       {jobs.error ? <p role="alert">{message(jobs.error)}</p> : jobs.isPending ? <p>Loading…</p> : (
         jobs.data.jobs.length === 0 ? <p className="muted">No jobs yet.</p> : (
           jobs.data.jobs.map((job) => (

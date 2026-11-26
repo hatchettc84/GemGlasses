@@ -40,8 +40,10 @@ class WakeListenService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_TURN_OFF) {
-            // disable() stops this service.
+            // disable() stops this service; stopSelf too in case it was only
+            // started for this action.
             workMode.disable()
+            stopSelf()
             return START_NOT_STICKY
         }
         val started = runCatching {
@@ -77,7 +79,14 @@ class WakeListenService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /** Keeps the recognizer restarting with the screen off; capped like the voice session's. */
+    /**
+     * Needed: the recognizer is restarted from a main-thread Handler between
+     * listening windows, and Handler delays run on uptime, which stops while
+     * the CPU sleeps — without this, "Hey Bob" can go deaf after the first
+     * window with the screen off. Held only while this service is up (it is
+     * stopped whenever Work Mode is off or unavailable) and released in
+     * [onDestroy], which every stop path reaches; the timeout is a backstop.
+     */
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager

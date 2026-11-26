@@ -81,6 +81,13 @@ sealed interface WorkEvent {
     /** Bob has acknowledged the wake phrase; the assistance session begins. */
     data object Acknowledged : WorkEvent
     data object ManualActivate : WorkEvent
+
+    /**
+     * Arming found a voice session already holding the mic: count it as
+     * assistance (ACTIVE) without starting the detector; it re-arms once the
+     * session ends.
+     */
+    data object VoiceBusy : WorkEvent
     data object IdleTimeout : WorkEvent
     data object SessionEnded : WorkEvent
 
@@ -127,6 +134,13 @@ object WorkModeMachine {
                 s
             }
 
+        WorkEvent.VoiceBusy ->
+            if (s.phase == WorkPhase.ARMING || s.phase == WorkPhase.IDLE_TIMEOUT) {
+                s.copy(phase = WorkPhase.ACTIVE, trigger = ActivationTrigger.MANUAL, wakeReady = false)
+            } else {
+                s
+            }
+
         WorkEvent.ManualActivate ->
             if (s.canStartManually || s.phase == WorkPhase.WAKE_DETECTED) {
                 s.copy(phase = WorkPhase.ACTIVE, trigger = ActivationTrigger.MANUAL)
@@ -165,7 +179,11 @@ object WorkModeMachine {
 interface WakeWordEngine {
     val displayName: String
 
-    fun start(route: MicRoute, onWake: () -> Unit): EngineStart
+    /**
+     * Starts listening. [onFailed] reports a failure after a successful start
+     * (the recognizer died or keeps erroring); the engine has stopped by then.
+     */
+    fun start(route: MicRoute, onWake: () -> Unit, onFailed: (String) -> Unit = {}): EngineStart
 
     fun stop()
 }
@@ -185,7 +203,8 @@ object NoWakeWordEngine : WakeWordEngine {
 
     override val displayName = "None selected"
 
-    override fun start(route: MicRoute, onWake: () -> Unit): EngineStart = EngineStart.Failed(REASON)
+    override fun start(route: MicRoute, onWake: () -> Unit, onFailed: (String) -> Unit): EngineStart =
+        EngineStart.Failed(REASON)
 
     override fun stop() = Unit
 }

@@ -9,11 +9,10 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.flow.MutableStateFlow
+import com.lpecom.gemglasses.bobai.live.BobVoiceAssistant
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 /**
@@ -29,7 +28,8 @@ import javax.inject.Singleton
  * synchronously (on the main thread) before WakeDetected is dispatched, and
  * the voice session is started by whoever observes that state. A manual
  * start stops the engine the same way. The engine is only started again by
- * [endAssistance], after the voice session is off.
+ * [endAssistance], and [WorkModeCore] refuses to start it while voice is on.
+ * The decisions live in [WorkModeCore] so they are JVM tested.
  *
  * Work Mode state is in memory only, so it never survives process death — a
  * killed app can't leave a stale "armed" indicator behind.
@@ -38,80 +38,47 @@ import javax.inject.Singleton
 class WorkModeController @Inject constructor(
     @ApplicationContext private val context: Context,
     private val engine: WakeWordEngine,
+    voiceProvider: Provider<BobVoiceAssistant>,
 ) {
-    private val handoff = WakeHandoff(engine, ::dispatch)
-    private val _state = MutableStateFlow(WorkModeState())
-    val state: StateFlow<WorkModeState> = _state.asStateFlow()
+    private val core = WorkModeCore(
+        engine = engine,
+        platform = object : WorkModePlatform {
+            override fun hasMicPermission() = this@WorkModeController.hasMicPermission()
+            override fun probeRoute() = this@WorkModeController.probeRoute()
+            override fun startListenService() = WakeListenService.start(context)
+            override fun stopListenService() = WakeListenService.stop(context)
+        },
+        voice = object : VoiceLink {
+            override val active get() = voiceProvider.get().state.value.active
+            override fun stop() = voiceProvider.get().stop()
+        },
+        log = { Log.i(TAG, it) },
+    )
+
+    val state: StateFlow<WorkModeState> = core.state
 
     val engineName: String get() = engine.displayName
 
     fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    /** Call after the RECORD_AUDIO request has been answered. */
-    fun enable() {
-        dispatch(WorkEvent.Enable)
-        // A microphone foreground service needs the permission when it starts.
-        if (hasMicPermission()) WakeListenService.start(context)
-        arm()
-    }
+    /** Call from the user's tap, after the RECORD_AUDIO request has been answered. */
+    fun enable() = core.enable()
 
-    fun disable() {
-        engine.stop()
-        WakeListenService.stop(context)
-        dispatch(WorkEvent.Disable)
-    }
+    /** Also ends a voice session the wake word started, which relied on Work Mode's service. */
+    fun disable() = core.disable()
 
     /** Manual fallback; always available while Work Mode is on. Frees the microphone first. */
-    fun startAssistance(): Boolean {
-        val s = _state.value
-        if (s.canStartManually || s.phase == WorkPhase.WAKE_DETECTED) engine.stop()
-        dispatch(WorkEvent.ManualActivate)
-        return _state.value.isActive
-    }
+    fun startAssistance(): Boolean = core.startAssistance()
 
     /** Bob is answering the wake word: WAKE_DETECTED -> ACTIVE. */
-    fun acknowledge() = dispatch(WorkEvent.Acknowledged)
+    fun acknowledge() = core.acknowledge()
 
     /** Call only once the voice session is off, so Bob's own voice can't wake the detector. */
-    fun endAssistance() {
-        dispatch(WorkEvent.SessionEnded)
-        if (_state.value.phase == WorkPhase.IDLE_TIMEOUT) arm()
-    }
+    fun endAssistance() = core.endAssistance()
 
     /** Re-check permission and route when the app returns to the foreground. */
-    fun recheck() {
-        val s = _state.value
-        if (!s.workModeOn) return
-        if (!hasMicPermission()) {
-            engine.stop()
-            // Nothing is listening, so don't leave the "listening" notification up.
-            WakeListenService.stop(context)
-            dispatch(WorkEvent.ResourceLost(NO_PERMISSION))
-        } else if (s.phase == WorkPhase.UNAVAILABLE && s.unavailableReason == NO_PERMISSION) {
-            dispatch(WorkEvent.Disable)
-            enable()
-        } else if (s.phase == WorkPhase.UNAVAILABLE) {
-            // Refresh the reported route without changing anything else.
-            _state.update { it.copy(route = probeRoute()) }
-        }
-    }
-
-    private fun arm() {
-        if (!hasMicPermission()) {
-            dispatch(WorkEvent.EngineFailed(NO_PERMISSION))
-            return
-        }
-        val route = probeRoute()
-        if (route.kind == RouteKind.NONE) {
-            dispatch(WorkEvent.EngineFailed("No microphone is available", route))
-            return
-        }
-        when (val r = handoff.arm(route)) {
-            EngineStart.Started -> dispatch(WorkEvent.EngineReady(route))
-            is EngineStart.Failed -> dispatch(WorkEvent.EngineFailed(r.reason, route))
-        }
-    }
+    fun recheck() = core.recheck()
 
     /**
      * Which microphone audio would come from, without opening it. A Bluetooth
@@ -140,13 +107,8 @@ class WorkModeController @Inject constructor(
         type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
             (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && type == AudioDeviceInfo.TYPE_BLE_HEADSET)
 
-    private fun dispatch(e: WorkEvent) {
-        _state.update { WorkModeMachine.reduce(it, e) }
-        Log.i(TAG, "$e -> ${_state.value.phase}")
-    }
-
     companion object {
-        const val NO_PERMISSION = "Microphone permission not granted"
+        const val NO_PERMISSION = WorkModeCore.NO_PERMISSION
         private const val TAG = "WorkMode"
     }
 }

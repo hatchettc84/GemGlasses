@@ -24,7 +24,7 @@ class WakeHandoffTest {
         var stops = 0
         private var onWake: (() -> Unit)? = null
 
-        override fun start(route: MicRoute, onWake: () -> Unit): EngineStart {
+        override fun start(route: MicRoute, onWake: () -> Unit, onFailed: (String) -> Unit): EngineStart {
             starts++
             log += "start"
             this.onWake = onWake
@@ -80,24 +80,5 @@ class WakeHandoffTest {
 
         val after = WorkModeMachine.reduce(active, WorkEvent.WakeDetected)
         assertEquals(active, after)
-    }
-
-    @Test fun `session end re-arms the engine`() {
-        var s = WorkModeState()
-        val engine = FakeEngine(mutableListOf())
-        val handoff = WakeHandoff(engine) { s = WorkModeMachine.reduce(s, it) }
-        s = WorkModeMachine.reduce(s, WorkEvent.Enable)
-        handoff.arm(route)
-        s = WorkModeMachine.reduce(s, WorkEvent.EngineReady(route))
-        engine.fire()
-        s = WorkModeMachine.reduce(s, WorkEvent.Acknowledged)
-
-        s = WorkModeMachine.reduce(s, WorkEvent.SessionEnded)
-        assertEquals(WorkPhase.IDLE_TIMEOUT, s.phase)
-        handoff.arm(route)
-        s = WorkModeMachine.reduce(s, WorkEvent.EngineReady(route))
-
-        assertEquals(2, engine.starts)
-        assertTrue(s.heyBobArmed)
     }
 }

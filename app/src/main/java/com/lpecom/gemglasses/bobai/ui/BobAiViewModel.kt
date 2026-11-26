@@ -327,6 +327,9 @@ class BobAiViewModel @Inject constructor(
     @android.annotation.SuppressLint("MissingPermission") // checked just below
     private fun onWakeWord() {
         workMode.acknowledge()
+        // Work Mode never arms while voice is on, but if a session is somehow
+        // already running, just carry on with it: no second start, no notice.
+        if (voice.state.value.active) return
         controller.startOrResume()
         if (!workMode.hasMicPermission()) {
             workMode.endAssistance()
@@ -334,8 +337,15 @@ class BobAiViewModel @Inject constructor(
         }
         viewModelScope.launch {
             delay(MIC_HANDOFF_SETTLE_MS)
-            if (!workMode.state.value.isActive) return@launch
-            voice.start()
+            if (!workMode.state.value.isActive || voice.state.value.active) return@launch
+            val started = runCatching { voice.start() }
+            if (started.isFailure) {
+                Log.w(TAG, "voice did not start after the wake word: ${started.exceptionOrNull()?.javaClass?.simpleName}")
+                runCatching { voice.stop() }
+                // Back to listening for "Hey Bob".
+                workMode.endAssistance()
+                return@launch
+            }
             voice.sendAppNotice("The technician just said \"Hey Bob\". Greet them in a few words and ask how you can help.")
         }
     }

@@ -2,7 +2,7 @@ package com.lpecom.gemglasses.bobai.workmode
 
 /** Recognises "Hey Bob" (and "hi/okay/ok Bob") in recognizer text. Pure, so it is JVM tested. */
 object WakePhrase {
-    private val pattern = Regex("""\b(?:hey|hi|okay|ok)\s+bob\b""", RegexOption.IGNORE_CASE)
+    private val pattern = Regex("""\b(?:hey|hi|okay|ok)[\s,]+bob\b""", RegexOption.IGNORE_CASE)
 
     fun matches(text: String): Boolean = pattern.containsMatchIn(text)
 }
@@ -17,8 +17,15 @@ object WakePhrase {
  * detector stays off until the controller re-arms it after the session ends.
  */
 class WakeHandoff(private val engine: WakeWordEngine, private val dispatch: (WorkEvent) -> Unit) {
-    fun arm(route: MicRoute): EngineStart = engine.start(route) {
-        engine.stop()
-        dispatch(WorkEvent.WakeDetected)
-    }
+    fun arm(route: MicRoute): EngineStart = engine.start(
+        route,
+        onWake = {
+            engine.stop()
+            dispatch(WorkEvent.WakeDetected)
+        },
+        onFailed = { reason ->
+            engine.stop()
+            dispatch(WorkEvent.EngineFailed(reason, route))
+        },
+    )
 }

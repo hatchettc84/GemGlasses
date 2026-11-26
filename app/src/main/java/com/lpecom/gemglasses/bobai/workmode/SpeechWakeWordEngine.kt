@@ -39,14 +39,15 @@ class SpeechWakeWordEngine(private val context: Context) : WakeWordEngine {
     // All of the below are touched on the main thread only.
     private var recognizer: SpeechRecognizer? = null
     private var onWake: (() -> Unit)? = null
+    private var onFailed: ((String) -> Unit)? = null
     /** Bumped on every start/stop so callbacks from an old recognizer are ignored. */
     private var generation = 0
     private var setCommunicationDevice = false
     private var modelDownloadRequested = false
-    private val recentErrors = ArrayDeque<Long>()
+    private val policy = WakeRestartPolicy()
     private val restartToken = Any()
 
-    override fun start(route: MicRoute, onWake: () -> Unit): EngineStart = onMain {
+    override fun start(route: MicRoute, onWake: () -> Unit, onFailed: (String) -> Unit): EngineStart = onMain {
         stopNow()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
             return@onMain EngineStart.Failed(NO_RECOGNIZER)
@@ -59,7 +60,8 @@ class SpeechWakeWordEngine(private val context: Context) : WakeWordEngine {
         created.setRecognitionListener(Listener(gen))
         recognizer = created
         this.onWake = onWake
-        recentErrors.clear()
+        this.onFailed = onFailed
+        policy.reset()
         if (route.kind == RouteKind.BLUETOOTH_HEADSET) selectHeadsetMic()
         listen()
         EngineStart.Started
@@ -76,6 +78,7 @@ class SpeechWakeWordEngine(private val context: Context) : WakeWordEngine {
         }
         recognizer = null
         onWake = null
+        onFailed = null
         if (setCommunicationDevice && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching { audio.clearCommunicationDevice() }
         }
@@ -89,26 +92,32 @@ class SpeechWakeWordEngine(private val context: Context) : WakeWordEngine {
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, LANGUAGE)
+        policy.onListen(SystemClock.elapsedRealtime())
         runCatching { r.startListening(intent) }.onFailure {
             Log.w(TAG, "startListening failed: ${it.javaClass.simpleName}")
-            scheduleRestart(afterError = true)
+            scheduleRestart(policy.onError(SystemClock.elapsedRealtime()))
         }
     }
 
-    private fun scheduleRestart(afterError: Boolean) {
+    private fun scheduleRestart(decision: WakeRestartPolicy.Decision) {
         main.removeCallbacksAndMessages(restartToken)
-        var delayMs = RESTART_MS
-        if (afterError) {
-            val now = SystemClock.elapsedRealtime()
-            recentErrors.addLast(now)
-            while (recentErrors.isNotEmpty() && now - recentErrors.first() > ERROR_WINDOW_MS) recentErrors.removeFirst()
-            if (recentErrors.size >= MAX_ERRORS) {
-                recentErrors.clear()
-                delayMs = BACKOFF_MS
+        when (decision) {
+            WakeRestartPolicy.Decision.GiveUp -> {
+                Log.w(TAG, "recognizer keeps failing; giving up")
+                fail(KEEPS_FAILING)
+            }
+            is WakeRestartPolicy.Decision.Restart -> {
+                val gen = generation
+                main.postAtTime({ if (gen == generation) listen() }, restartToken, SystemClock.uptimeMillis() + decision.delayMs)
             }
         }
-        val gen = generation
-        main.postAtTime({ if (gen == generation) listen() }, restartToken, SystemClock.uptimeMillis() + delayMs)
+    }
+
+    /** Stops listening for good and tells Work Mode, so it never reports "armed" with nothing listening. */
+    private fun fail(reason: String) {
+        val callback = onFailed
+        stopNow()
+        callback?.invoke(reason)
     }
 
     /** The hand-off stops this engine from inside the callback, so it fires at most once. */
@@ -141,25 +150,26 @@ class SpeechWakeWordEngine(private val context: Context) : WakeWordEngine {
 
         override fun onResults(results: Bundle?) {
             if (!current) return
-            if (!checkForWake(results)) scheduleRestart(afterError = false)
+            if (!checkForWake(results)) scheduleRestart(policy.onResult())
         }
 
         override fun onError(error: Int) {
             if (!current) return
             Log.i(TAG, "recognizer error $error")
+            val now = SystemClock.elapsedRealtime()
             when (error) {
                 // Silence or speech that wasn't recognised: the normal end of an
-                // idle listening window, not a fault, so no backoff.
+                // idle listening window, not a fault, so no backoff — unless it
+                // came back almost at once (see WakeRestartPolicy).
                 SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                    scheduleRestart(afterError = false)
+                    scheduleRestart(policy.onSilence(now))
                 SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> {
                     // The recognizer service went away; this instance is dead.
-                    recreate()
-                    scheduleRestart(afterError = true)
+                    if (recreate()) scheduleRestart(policy.onError(now)) else fail(KEEPS_FAILING)
                 }
                 else -> {
                     if (error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) requestModelDownload()
-                    scheduleRestart(afterError = true)
+                    scheduleRestart(policy.onError(now))
                 }
             }
         }
@@ -172,11 +182,13 @@ class SpeechWakeWordEngine(private val context: Context) : WakeWordEngine {
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
     }
 
-    private fun recreate() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+    /** Returns false if no new recognizer could be made. */
+    private fun recreate(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
         recognizer?.let { runCatching { it.destroy() } }
         recognizer = runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(context) }.getOrNull()
             ?.also { it.setRecognitionListener(Listener(generation)) }
+        return recognizer != null
     }
 
     /** Asks the system once to fetch the on-device English model if it is missing. */
@@ -195,13 +207,10 @@ class SpeechWakeWordEngine(private val context: Context) : WakeWordEngine {
     }
 
     companion object {
+        const val KEEPS_FAILING = "\"Hey Bob\" stopped working on this phone. Turn Work Mode off and on to try again, or use Start assistance."
         const val NO_RECOGNIZER = "This phone has no on-device speech recognizer, so \"Hey Bob\" can't listen. Use Start assistance."
         private const val TAG = "HeyBob"
         private const val LANGUAGE = "en-US"
-        private const val RESTART_MS = 250L
-        private const val BACKOFF_MS = 5_000L
-        private const val ERROR_WINDOW_MS = 30_000L
-        private const val MAX_ERRORS = 5
         private const val MAIN_TIMEOUT_S = 5L
     }
 }

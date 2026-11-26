@@ -7,7 +7,7 @@ import org.junit.Test
 
 class WakePhraseTest {
     @Test fun `matches common ways of saying hey bob`() {
-        listOf("hey bob", "Hey Bob.", "hey bob what's my next job", "hi bob", "okay bob", "ok bob", "hey bob,").forEach {
+        listOf("hey bob", "Hey Bob.", "hey bob what's my next job", "hi bob", "okay bob", "ok bob", "hey bob,", "Hey, Bob").forEach {
             assertTrue(it, WakePhrase.matches(it))
         }
     }

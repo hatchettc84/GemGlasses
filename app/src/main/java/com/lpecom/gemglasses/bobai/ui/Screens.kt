@@ -161,6 +161,7 @@ fun HomeScreen(vm: BobAiViewModel, nav: NavHostController) {
                 )
             }
         }
+        SetupCard(vm, nav)
         WorkModeCard(vm, onStartAssistance = { start() })
         SectionCard(
             title = "Current job",
@@ -1939,6 +1940,88 @@ private fun OfflineAskCard(vm: BobAiViewModel) {
     }
 }
 
+/** The microphone for "Hey Bob", and on Android 13+ notifications so the ongoing "listening" notice can be shown. */
+private fun workModePermissions(): List<String> = buildList {
+    add(android.Manifest.permission.RECORD_AUDIO)
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        add(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
+}
+
+/**
+ * One card that walks a new technician through glasses, microphone, office
+ * pairing, sync and "Hey Bob" — then shrinks to a single "Ready" chip.
+ * Reuses the same permission request as Work Mode: "Allow" asks for the
+ * microphone (and notifications) but does not turn Work Mode on by itself.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SetupCard(vm: BobAiViewModel, nav: NavHostController) {
+    val wm by vm.workModeState.collectAsStateWithLifecycle()
+    val glasses by vm.glasses.collectAsStateWithLifecycle()
+    val pairing by vm.pairing.collectAsStateWithLifecycle()
+    val synced by vm.officeSynced.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun micNow() = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.RECORD_AUDIO,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    var micGranted by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(micNow()) }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
+    ) { micGranted = micNow() }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) micGranted = micNow()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+
+    val steps = setupSteps(
+        glassesConnected = glasses.ok,
+        micGranted = micGranted,
+        phonePaired = pairing.paired,
+        officeSynced = synced,
+        heyBobOn = wm.workModeOn && wm.phase != WorkPhase.UNAVAILABLE,
+    )
+    if (steps.all { it.done }) {
+        StatusChip("Ready — say \"Hey Bob\"", Tone.OK)
+        return
+    }
+    SectionCard(
+        title = "Get set up",
+        accentTone = Tone.WARN,
+        trailingHeader = { TechnicalBadge("SETUP", "${steps.count { it.done }}/${steps.size}") },
+    ) {
+        steps.forEach { step ->
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    (if (step.done) "Done: " else "To do: ") + step.label,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (step.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                )
+                step.action?.let { label ->
+                    SecondaryAction(label, {
+                        when (step.id) {
+                            "glasses" -> vm.registerGlasses()
+                            "mic" -> permission.launch(workModePermissions().toTypedArray())
+                            "pair" -> nav.goTop(Routes.SETTINGS)
+                            "sync" -> vm.refreshOffice()
+                            "heybob" -> if (micGranted) vm.workMode.enable() else permission.launch(workModePermissions().toTypedArray())
+                        }
+                    })
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
@@ -1946,14 +2029,7 @@ private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
     val glasses by vm.glasses.collectAsStateWithLifecycle()
     val mode by vm.mode.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
-    // The microphone for "Hey Bob", and on Android 13+ notifications so the
-    // ongoing "listening" notice can be shown.
-    val wanted = buildList {
-        add(android.Manifest.permission.RECORD_AUDIO)
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            add(android.Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
+    val wanted = workModePermissions()
     fun allGranted() = wanted.all {
         androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }

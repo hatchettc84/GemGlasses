@@ -228,6 +228,11 @@ class BobAiViewModel @Inject constructor(
     private val _officeStatus = MutableStateFlow("Office: not synced yet")
     val officeStatus: StateFlow<String> = _officeStatus
 
+    private val _officeSynced = MutableStateFlow(false)
+
+    /** True when the last office sync succeeded. */
+    val officeSynced: StateFlow<Boolean> = _officeSynced
+
     private val officeMutex = kotlinx.coroutines.sync.Mutex()
 
     /** Pulls manuals and jobs from the office and updates [officeStatus]. Never throws. */
@@ -238,6 +243,7 @@ class BobAiViewModel @Inject constructor(
                     if (deviceKeys.wasRemoved()) com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed
                     else officeSync.syncNow()
                 }
+                _officeSynced.value = outcome is com.lpecom.gemglasses.bobai.office.SyncOutcome.Synced
                 _officeStatus.value = when (outcome) {
                     is com.lpecom.gemglasses.bobai.office.SyncOutcome.Synced -> {
                         val s = controller.state.value
@@ -362,7 +368,15 @@ class BobAiViewModel @Inject constructor(
         if (wm.workModeOn && !wm.isActive && workMode.startAssistance()) {
             viewModelScope.launch {
                 delay(MIC_HANDOFF_SETTLE_MS)
-                voice.start()
+                // Same guard as the wake path: only start if nothing else has
+                // since, and never leave Work Mode stuck in ACTIVE on failure.
+                if (voice.state.value.active || !workMode.state.value.isActive) return@launch
+                val started = runCatching { voice.start() }
+                if (started.isFailure) {
+                    Log.w(TAG, "voice did not start after the manual start: ${started.exceptionOrNull()?.javaClass?.simpleName}")
+                    runCatching { voice.stop() }
+                    workMode.endAssistance()
+                }
             }
         } else {
             voice.start()

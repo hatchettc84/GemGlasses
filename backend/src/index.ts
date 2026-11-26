@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "./env";
 import { errorBody, handleError, jsonResponse } from "./lib/errors";
 import { adminAuth } from "./auth/admin";
+import { csrfGuard } from "./auth/csrf";
 import { adminUsers } from "./routes/admin-users";
 import { adminDevices } from "./routes/admin-devices";
 import { deviceApi } from "./routes/device";
@@ -24,7 +25,7 @@ app.notFound(() => jsonResponse(errorBody("not_found", "Not found."), 404));
 app.post("/token", legacyAuth, (c) => mintToken(c.env));
 app.post("/places", legacyAuth, (c) => searchPlaces(c.req.raw, c.env));
 
-app.use("/api/admin/*", adminAuth);
+app.use("/api/admin/*", csrfGuard, adminAuth);
 app.route("/api/admin", adminUsers);
 app.route("/api/admin", adminDevices);
 app.route("/api/device", deviceApi);

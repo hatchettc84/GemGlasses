@@ -49,18 +49,21 @@ deviceApi.post("/pair", async (c) => {
     : null;
   if (!match) throw invalidCode();
 
-  // Claim, device and audit in one batch; the device exists only if the claim applied.
+  // D1 runs a batch as one serialized transaction, so statement order gives the
+  // race safety: the device is inserted only while the code is still unclaimed
+  // and unexpired, then the code is marked used. The outcome is read back (never
+  // inferred from changes()), so a lost race finds no device row.
   const deviceKey = randomKey();
   const deviceId = ulid();
   const deviceExists = "SELECT 1 FROM devices WHERE id = ?";
-  // changes() below refers to the immediately preceding statement in the batch; verify on remote D1 before release.
-  const [claimed] = await db.batch([
-    db.prepare("UPDATE pairing_codes SET used_at = ?, updated_at = ? WHERE id = ? AND used_at IS NULL")
-      .bind(now, now, match.id),
+  await db.batch([
     db.prepare(
       `INSERT INTO devices (id, tenant_id, user_id, label, key_hash, paired_at, last_seen_at, revoked_at, created_at, updated_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, NULL, ?, ? WHERE changes() = 1`,
-    ).bind(deviceId, TENANT_ID, match.user_id, label, await sha256Hex(deviceKey), now, now, now, now),
+       SELECT ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?
+        WHERE EXISTS (SELECT 1 FROM pairing_codes WHERE id = ? AND used_at IS NULL AND expires_at > ?)`,
+    ).bind(deviceId, TENANT_ID, match.user_id, label, await sha256Hex(deviceKey), now, now, now, now, match.id, now),
+    db.prepare("UPDATE pairing_codes SET used_at = ?, updated_at = ? WHERE id = ? AND used_at IS NULL")
+      .bind(now, now, match.id),
     auditStmtIfExists(db, deviceExists, [deviceId], { type: "device", id: deviceId, tenantId: TENANT_ID }, "device.paired", "device", deviceId, null, {
       label,
       userId: match.user_id,
@@ -69,7 +72,8 @@ deviceApi.post("/pair", async (c) => {
       `DELETE FROM audit_log WHERE tenant_id = ? AND action = 'device.pair_failed' AND entity_id = ? AND EXISTS (${deviceExists})`,
     ).bind(TENANT_ID, attemptId, deviceId),
   ]);
-  if (claimed.meta.changes !== 1) throw invalidCode();
+  const created = await db.prepare(deviceExists).bind(deviceId).first();
+  if (!created) throw invalidCode();
   return c.json({ deviceKey, deviceId, user: { name: match.name, email: match.email } }, 201);
 });
 

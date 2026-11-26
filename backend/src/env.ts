@@ -3,7 +3,8 @@ export interface Env {
   /** Google AI Studio API key (secret). */
   GEMINI_API_KEY: string;
   /** Legacy shared secret the app sends in X-App-Secret (secret). */
-  TOKEN_APP_SECRET: string;
+  /** Legacy shared secret; unset once every phone is paired. */
+  TOKEN_APP_SECRET?: string;
   /** "dev" only in .dev.vars and tests; enables X-Dev-User-Email. */
   ENVIRONMENT?: string;
   /** e.g. https://yourteam.cloudflareaccess.com */

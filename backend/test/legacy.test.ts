@@ -1,5 +1,7 @@
 import { fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { env } from "cloudflare:test";
+import app from "../src/index";
 import { api } from "./helpers";
 
 const GOOGLE = "https://generativelanguage.googleapis.com";
@@ -13,6 +15,13 @@ afterEach(() => fetchMock.assertNoPendingInterceptors());
 describe("legacy /token", () => {
   it("refuses a request without credentials", async () => {
     const res = await api("/token", { method: "POST" });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized", message: "Not authorized." });
+  });
+
+  it("answers 401, not 500, when TOKEN_APP_SECRET is unset", async () => {
+    const req = new Request("http://localhost/token", { method: "POST", headers: { "X-App-Secret": "anything" } });
+    const res = await app.fetch(req, { ...env, TOKEN_APP_SECRET: undefined });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized", message: "Not authorized." });
   });

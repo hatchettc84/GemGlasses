@@ -12,7 +12,7 @@ const GROUNDING_MODEL = "gemini-2.5-flash";
 /** Legacy routes accept the shared app secret or a paired device key. */
 export const legacyAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   const secret = c.req.header("X-App-Secret") ?? "";
-  if (secret && timingSafeEqual(secret, c.env.TOKEN_APP_SECRET)) return next();
+  if (secret && c.env.TOKEN_APP_SECRET && timingSafeEqual(secret, c.env.TOKEN_APP_SECRET)) return next();
   if (c.req.header("Authorization")) return deviceAuth(c, next);
   throw new ApiError(401, "unauthorized", "Not authorized.");
 };

@@ -5,11 +5,27 @@ import { auditStmt, SYSTEM_ACTOR } from "../lib/audit";
 import { nowIso, ulid } from "../lib/ids";
 import { accessKeys, normalizeTeamDomain, verifyAccessJwt } from "./access-jwt";
 
-/** Who is calling: the dev header (dev only) or a verified Cloudflare Access JWT. */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+function isLocalRequest(req: Request): boolean {
+  try {
+    return LOCAL_HOSTS.has(new URL(req.url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Who is calling: the dev header or a verified Cloudflare Access JWT. The dev
+ * header needs ENVIRONMENT="dev", no ACCESS_AUD configured, and a loopback host.
+ */
 export async function identityEmail(req: Request, env: Env): Promise<string | null> {
-  if (env.ENVIRONMENT === "dev") {
+  if (env.ENVIRONMENT === "dev" && !env.ACCESS_AUD && isLocalRequest(req)) {
     const dev = req.headers.get("X-Dev-User-Email");
-    if (dev) return dev.trim().toLowerCase();
+    if (dev) {
+      console.warn("dev identity header used (X-Dev-User-Email)");
+      return dev.trim().toLowerCase();
+    }
   }
   const jwt = req.headers.get("Cf-Access-Jwt-Assertion");
   if (!jwt || !env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) return null;

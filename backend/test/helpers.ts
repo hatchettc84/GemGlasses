@@ -12,8 +12,11 @@ export function api(path: string, init: RequestInit & { as?: string } = {}): Pro
   const { as, ...rest } = init;
   const headers = new Headers(rest.headers);
   if (as) headers.set("X-Dev-User-Email", as);
-  if (rest.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(`https://bobai.test${path}`, { ...rest, headers });
+  const method = (rest.method ?? "GET").toUpperCase();
+  const mutating = method !== "GET" && method !== "HEAD";
+  if ((rest.body !== undefined || mutating) && !headers.has("content-type")) headers.set("content-type", "application/json");
+  // The dev identity header is honored only on loopback hosts.
+  return SELF.fetch(`http://localhost${path}`, { ...rest, headers });
 }
 
 let seq = 0;

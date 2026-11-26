@@ -48,22 +48,20 @@ adminDevices.post("/devices/:id/revoke", requireRole("admin"), async (c) => {
   if (!row) throw new ApiError(404, "not_found", "That phone was not found.");
   if (row.revoked_at) return c.json({ device: deviceJson(row) });
 
+  // D1 runs a batch as one serialized transaction: the audit row is inserted
+  // only while the device is still active, then the device is revoked. The
+  // outcome is read back, so it does not depend on changes().
   const now = nowIso();
-  const next: DeviceRow = { ...row, revoked_at: now };
   const db = c.env.DB;
-  const [updated] = await db.batch([
-    // changes() in the next statement refers to this UPDATE (immediately preceding); verify on remote D1 before release.
+  await db.batch([
+    auditStmtIfExists(
+      db, "SELECT 1 FROM devices WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL", [id, actor.tenantId],
+      actorFromUser(actor), "device.revoked", "device", id, deviceJson(row), deviceJson({ ...row, revoked_at: now }),
+    ),
     db.prepare("UPDATE devices SET revoked_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL")
       .bind(now, now, id, actor.tenantId),
-    auditStmtIfExists(
-      db, "SELECT 1 WHERE changes() = 1", [], // true only if the UPDATE above changed a row
-      actorFromUser(actor), "device.revoked", "device", id, deviceJson(row), deviceJson(next),
-    ),
   ]);
-  if (updated.meta.changes !== 1) {
-    // Someone else revoked it first: report the current state, audit nothing.
-    const current = await db.prepare(`${SELECT_DEVICES} AND d.id = ?`).bind(actor.tenantId, id).first<DeviceRow>();
-    return c.json({ device: deviceJson(current ?? next) });
-  }
-  return c.json({ device: deviceJson(next) });
+  // Report the stored state (ours, or the other request's if it won the race).
+  const current = await db.prepare(`${SELECT_DEVICES} AND d.id = ?`).bind(actor.tenantId, id).first<DeviceRow>();
+  return c.json({ device: deviceJson(current ?? { ...row, revoked_at: now }) });
 });

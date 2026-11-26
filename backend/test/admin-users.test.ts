@@ -36,10 +36,28 @@ describe("admin identity", () => {
   });
 
   it("ignores the dev header outside dev", async () => {
-    const req = new Request("https://x/", { headers: { "X-Dev-User-Email": BOSS } });
+    const req = new Request("http://localhost/", { headers: { "X-Dev-User-Email": BOSS } });
     expect(await identityEmail(req, { ...env, ENVIRONMENT: undefined })).toBeNull();
     expect(await identityEmail(req, { ...env, ENVIRONMENT: "production" })).toBeNull();
     expect(await identityEmail(req, env)).toBe(BOSS);
+  });
+
+  it("ignores the dev header when ACCESS_AUD is set", async () => {
+    const req = new Request("http://localhost/", { headers: { "X-Dev-User-Email": BOSS } });
+    expect(await identityEmail(req, { ...env, ACCESS_AUD: "aud-tag" })).toBeNull();
+  });
+
+  it("ignores the dev header on a non-local host", async () => {
+    const headers = { "X-Dev-User-Email": BOSS };
+    expect(await identityEmail(new Request("https://bobai.example.com/", { headers }), env)).toBeNull();
+    expect(await identityEmail(new Request("https://localhost.evil.com/", { headers }), env)).toBeNull();
+  });
+
+  it("accepts the dev header on loopback hosts", async () => {
+    const headers = { "X-Dev-User-Email": BOSS };
+    expect(await identityEmail(new Request("http://localhost/", { headers }), env)).toBe(BOSS);
+    expect(await identityEmail(new Request("http://127.0.0.1:8787/", { headers }), env)).toBe(BOSS);
+    expect(await identityEmail(new Request("http://[::1]:8787/", { headers }), env)).toBe(BOSS);
   });
 
   it("refuses deactivated people", async () => {

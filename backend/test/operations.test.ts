@@ -199,6 +199,36 @@ describe("document approval pipeline", () => {
     expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM documents").first<{ n: number }>())!.n).toBe(0);
   });
 
+  it("rejects a PDF whose extracted text is too large (422) and stores nothing", async () => {
+    const objs: string[] = [];
+    const pageIds = Array.from({ length: 10 }, (_, i) => 4 + i * 2);
+    objs[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+    objs[2] = `<< /Type /Pages /Kids [${pageIds.map((n) => `${n} 0 R`).join(" ")}] /Count 10 >>`;
+    objs[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+    for (const n of pageIds) {
+      objs[n] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${n + 1} 0 R >>`;
+      const line = `(${"word ".repeat(100)}) '`;
+      const stream = `BT /F1 2 Tf 2 TL 10 780 Td ${Array.from({ length: 300 }, () => line).join("\n")} ET`;
+      objs[n + 1] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+    }
+    let pdf = "%PDF-1.4\n";
+    const offs: number[] = [];
+    for (let i = 1; i < objs.length; i++) {
+      offs[i] = pdf.length;
+      pdf += `${i} 0 obj\n${objs[i]}\nendobj\n`;
+    }
+    const xref = pdf.length;
+    pdf += `xref\n0 ${objs.length}\n0000000000 65535 f \n` + offs.slice(1).map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("");
+    pdf += `trailer\n<< /Size ${objs.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+    const res = await upload({ title: "Huge", revision: "1", models: "X" }, new File([pdf], "huge.pdf", { type: "application/pdf" }));
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error).toBe("text_too_large");
+    expect(body.message).toContain("Split it into smaller files");
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM documents").first<{ n: number }>())!.n).toBe(0);
+    expect((await env.DOCUMENTS.list()).objects).toHaveLength(0);
+  });
+
   it("keeps pasted text for a text-less PDF and rejects an unreadable PDF", async () => {
     const pasted = await upload({ title: "Scan", revision: "1", models: "X", pageText: "Typed from the scan." }, pdfFile(EMPTY_PDF, "scan.pdf"));
     expect(pasted.status).toBe(201);

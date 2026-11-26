@@ -8,6 +8,8 @@ import { nowIso, ulid } from "../lib/ids";
 import { extractPdfPages } from "../lib/pdf-text";
 import { text } from "./operations";
 
+// D1 rows are limited to ~2 MB; keep serialized page text well under that.
+export const MAX_PAGES_JSON_CHARS = 1_000_000;
 export const documents = new Hono<AppEnv>();
 export type DocumentRow = {
   id: string;
@@ -83,6 +85,20 @@ documents.post(
       new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-"
     )
       throw new ApiError(400, "invalid_file", "This file is not a PDF.");
+    const models = String(form.get("models") ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (
+      !models.length ||
+      models.length > 100 ||
+      models.some((m) => m.length > 120)
+    )
+      throw new ApiError(
+        400,
+        "invalid_models",
+        "List at least one applicable equipment model, separated by commas.",
+      );
     let pages: Array<{ number: number; heading: string; body: string }> = [];
     const pageText = form.get("pageText");
     if (typeof pageText === "string" && pageText.trim()) {
@@ -119,7 +135,8 @@ documents.post(
     } else if (contentType === "application/pdf") {
       try {
         pages = await extractPdfPages(new Uint8Array(bytes));
-      } catch {
+      } catch (err) {
+        console.error("pdf extraction failed", err);
         throw new ApiError(
           400,
           "invalid_file",
@@ -133,19 +150,11 @@ documents.post(
           "This PDF has no text (it may be a scan). Upload a text PDF; scanned manuals are not supported yet.",
         );
     }
-    const models = String(form.get("models") ?? "")
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean);
-    if (
-      !models.length ||
-      models.length > 100 ||
-      models.some((m) => m.length > 120)
-    )
+    if (JSON.stringify(pages).length > MAX_PAGES_JSON_CHARS)
       throw new ApiError(
-        400,
-        "invalid_models",
-        "List at least one applicable equipment model, separated by commas.",
+        422,
+        "text_too_large",
+        "This manual has too much text to send to phones. Split it into smaller files and upload each one.",
       );
     const id = ulid(),
       key = `${u.tenantId}/${id}/${filename}`,

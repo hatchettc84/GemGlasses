@@ -27,23 +27,47 @@ export type DocumentRow = {
   version: number;
   updated_at: string;
 };
-const publicDoc = (d: DocumentRow) => ({
+// The list never carries page text (it can be ~1 MB per document); one document's
+// pages come from GET /documents/:id/pages.
+type DocumentListRow = Omit<DocumentRow, "pages_json"> & { page_count: number };
+const LIST_COLUMNS =
+  "id,tenant_id,title,revision,models_json,filename,content_type,size_bytes,sha256,storage_key,status,version,updated_at,json_array_length(pages_json) AS page_count";
+const publicDoc = (d: DocumentListRow) => ({
   ...d,
   storage_key: undefined,
-  pages_json: undefined,
   models: JSON.parse(d.models_json),
-  pages: JSON.parse(d.pages_json),
 });
 documents.get(
   "/documents",
   requireRole("admin", "dispatcher", "reviewer"),
   async (c) => {
     const { results } = await c.env.DB.prepare(
-      "SELECT * FROM documents WHERE tenant_id=? ORDER BY updated_at DESC LIMIT 500",
+      `SELECT ${LIST_COLUMNS} FROM documents WHERE tenant_id=? ORDER BY updated_at DESC LIMIT 500`,
     )
       .bind(c.get("user").tenantId)
-      .all<DocumentRow>();
+      .all<DocumentListRow>();
     return c.json({ documents: results.map(publicDoc) });
+  },
+);
+// Extracted page text for review before approval (any office role, any status).
+documents.get(
+  "/documents/:id/pages",
+  requireRole("admin", "dispatcher", "reviewer"),
+  async (c) => {
+    const row = await c.env.DB.prepare(
+      "SELECT id,title,revision,status,version,pages_json FROM documents WHERE tenant_id=? AND id=?",
+    )
+      .bind(c.get("user").tenantId, c.req.param("id"))
+      .first<Pick<DocumentRow, "id" | "title" | "revision" | "status" | "version" | "pages_json">>();
+    if (!row) throw new ApiError(404, "not_found", "Document not found.");
+    return c.json({
+      id: row.id,
+      title: row.title,
+      revision: row.revision,
+      status: row.status,
+      version: row.version,
+      pages: JSON.parse(row.pages_json),
+    });
   },
 );
 documents.post(

@@ -117,6 +117,8 @@ describe("document approval pipeline", () => {
     expect(uploaded.status).toBe(201);
     const { id } = await uploaded.json();
     expect((await (await api("/api/device/knowledge", { headers: tech.headers })).json()).documents).toHaveLength(0);
+    // A draft's pages are not served to phones.
+    expect((await api(`/api/device/knowledge/${id}`, { headers: tech.headers })).status).toBe(404);
 
     expect((await patch(`/documents/${id}`, { status: "approved", version: 1 }, "reviewer@example.com")).status).toBe(200);
     const body = await (await api("/api/device/knowledge", { headers: tech.headers })).json();
@@ -130,8 +132,17 @@ describe("document approval pipeline", () => {
       isMock: false,
       revision: "B",
       applicableModels: ["P-100", "P-200"],
+      version: 2,
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    expect(body.documents[0].pages[0]).toEqual({
+    // The manifest carries no page text; one document's pages come from /knowledge/:id.
+    expect(body.documents[0].pages).toBeUndefined();
+    const one = await api(`/api/device/knowledge/${id}`, { headers: tech.headers });
+    expect(one.status).toBe(200);
+    const single = await one.json();
+    expect(single).toMatchObject({ version: 2, sha256: body.documents[0].sha256 });
+    expect(single.document).toMatchObject({ id, packId: "office-approved", approvalStatus: "APPROVED", revision: "B" });
+    expect(single.document.pages[0]).toEqual({
       number: 1,
       heading: expect.any(String),
       body: expect.stringContaining("Turn the gas valve to OFF"),
@@ -144,6 +155,9 @@ describe("document approval pipeline", () => {
     expect((await patch(`/documents/${id}`, { status: "revoked", version: 1 })).status).toBe(409);
     expect((await patch(`/documents/${id}`, { status: "revoked", version: 2 })).status).toBe(200);
     expect((await (await api("/api/device/knowledge", { headers: tech.headers })).json()).documents).toHaveLength(0);
+    const gone = await api(`/api/device/knowledge/${id}`, { headers: tech.headers });
+    expect(gone.status).toBe(404);
+    expect((await gone.json()).error).toBe("not_found");
     expect((await api(`/api/device/documents/${id}/file`, { headers: tech.headers })).status).toBe(404);
 
     const actions = await auditActions();
@@ -156,6 +170,30 @@ describe("document approval pipeline", () => {
     const res = await api(`/api/admin/documents/${id}/file`, { as: BOSS });
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("gas valve");
+  });
+
+  it("the document list carries no page text; office roles read one document's pages", async () => {
+    const { id } = await (await manual()).json();
+    const list = await (await api("/api/admin/documents", { as: BOSS })).json();
+    expect(list.documents).toHaveLength(1);
+    expect(list.documents[0]).toMatchObject({ id, status: "draft", page_count: 1, models: ["P-100", "P-200"] });
+    expect(list.documents[0].pages).toBeUndefined();
+    expect(list.documents[0].pages_json).toBeUndefined();
+    expect(list.documents[0].storage_key).toBeUndefined();
+
+    for (const [email, role] of [["rev@example.com", "reviewer"], ["disp@example.com", "dispatcher"]] as const) {
+      await seedUser(email, role);
+      const res = await api(`/api/admin/documents/${id}/pages`, { as: email });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ id, title: "Pump manual", revision: "B", status: "draft", version: 1 });
+      expect(body.pages[0].body).toContain("Turn the gas valve to OFF");
+    }
+    await seedUser("tech3@example.com", "technician");
+    expect((await api(`/api/admin/documents/${id}/pages`, { as: "tech3@example.com" })).status).toBe(403);
+    const missing = await api("/api/admin/documents/nope/pages", { as: BOSS });
+    expect(missing.status).toBe(404);
+    expect((await missing.json()).error).toBe("not_found");
   });
 
   it("a technician cannot upload or list documents", async () => {

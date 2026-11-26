@@ -118,28 +118,46 @@ fieldOperations.get("/documents/:id/file", async (c) => {
   });
 });
 // Authenticated, versioned source for the phone's offline knowledge adapter.
+// /knowledge is a manifest only (no page text); the phone downloads the pages
+// of new or changed documents from /knowledge/:id and drops cached documents
+// that are no longer listed, which is how a revocation reaches it.
+const KNOWLEDGE_TTL_MS = 24 * 60 * 60 * 1000;
+const knowledgeMeta = (r: Omit<DocumentRow, "pages_json">) => ({
+  id: r.id,
+  tenantId: r.tenant_id,
+  title: r.title,
+  family: r.title,
+  revision: r.revision,
+  applicableModels: JSON.parse(r.models_json),
+  approvalStatus: "APPROVED",
+  packId: "office-approved",
+  isMock: false,
+  version: r.version,
+  sha256: r.sha256,
+});
 fieldOperations.get("/knowledge", async (c) => {
   const d = c.get("device");
   const { results } = await c.env.DB.prepare(
-    "SELECT * FROM documents WHERE tenant_id=? AND status='approved' ORDER BY id",
+    "SELECT id,tenant_id,title,revision,models_json,sha256,version FROM documents WHERE tenant_id=? AND status='approved' ORDER BY id",
   )
     .bind(d.tenantId)
-    .all<DocumentRow>();
+    .all<Omit<DocumentRow, "pages_json">>();
+  const now = Date.now();
   return c.json({
     tenantId: d.tenantId,
-    generatedAt: Date.now(),
-    expiresAt: Date.now() + 24 * 60 * 60 * 1000,
-    documents: results.map((r) => ({
-      id: r.id,
-      tenantId: r.tenant_id,
-      title: r.title,
-      family: r.title,
-      revision: r.revision,
-      applicableModels: JSON.parse(r.models_json),
-      approvalStatus: "APPROVED",
-      packId: "office-approved",
-      pages: JSON.parse(r.pages_json),
-      isMock: false,
-    })),
+    generatedAt: now,
+    expiresAt: now + KNOWLEDGE_TTL_MS,
+    documents: results.map(knowledgeMeta),
   });
+});
+fieldOperations.get("/knowledge/:id", async (c) => {
+  const row = await c.env.DB.prepare(
+    "SELECT * FROM documents WHERE tenant_id=? AND id=? AND status='approved'",
+  )
+    .bind(c.get("device").tenantId, c.req.param("id"))
+    .first<DocumentRow>();
+  if (!row)
+    throw new ApiError(404, "not_found", "Approved document not found.");
+  const { version, sha256, ...doc } = knowledgeMeta(row);
+  return c.json({ version, sha256, document: { ...doc, pages: JSON.parse(row.pages_json) } });
 });

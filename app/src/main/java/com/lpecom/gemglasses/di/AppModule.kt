@@ -71,6 +71,12 @@ object AppModule {
         api, File(context.filesDir, "bobai/office"), controller,
     ) { keyStore.get() != null }
 
+    /** "Hey Bob": Android's on-device speech recognizer, never the cloud one. */
+    @Provides
+    @Singleton
+    fun wakeWordEngine(@ApplicationContext context: Context): com.lpecom.gemglasses.bobai.workmode.WakeWordEngine =
+        com.lpecom.gemglasses.bobai.workmode.SpeechWakeWordEngine(context)
+
     /**
      * Selects the glasses backend at runtime. The real Meta DAT backend is
      * loaded reflectively so `src/main` never references the SDK — that keeps

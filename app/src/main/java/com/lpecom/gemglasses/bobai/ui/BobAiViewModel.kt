@@ -23,6 +23,9 @@ import com.lpecom.gemglasses.bobai.live.MediaStatus
 import com.lpecom.gemglasses.bobai.live.ModeAvailability
 import com.lpecom.gemglasses.bobai.workmode.WorkModeController
 import com.lpecom.gemglasses.bobai.workmode.WorkModeState
+import com.lpecom.gemglasses.bobai.workmode.WorkPhase
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.lpecom.gemglasses.glasses.GlassesCameraSource
 import com.lpecom.gemglasses.glasses.GlassesManager
 import com.lpecom.gemglasses.glasses.RegistrationState
@@ -314,6 +317,53 @@ class BobAiViewModel @Inject constructor(
 
     val workModeState: StateFlow<WorkModeState> = workMode.state
 
+    /**
+     * "Hey Bob" was heard. The detector has already been stopped and
+     * destroyed (WakeHandoff does that, on the main thread, before
+     * WAKE_DETECTED is published), so the microphone is free; the short
+     * settle gives the recognizer service time to close its audio input
+     * before Gemini Live opens the mic.
+     */
+    @android.annotation.SuppressLint("MissingPermission") // checked just below
+    private fun onWakeWord() {
+        workMode.acknowledge()
+        controller.startOrResume()
+        if (!workMode.hasMicPermission()) {
+            workMode.endAssistance()
+            return
+        }
+        viewModelScope.launch {
+            delay(MIC_HANDOFF_SETTLE_MS)
+            if (!workMode.state.value.isActive) return@launch
+            voice.start()
+            voice.sendAppNotice("The technician just said \"Hey Bob\". Greet them in a few words and ask how you can help.")
+        }
+    }
+
+    /**
+     * Talk to Bob from the button. If Work Mode is listening, it is paused
+     * first (as a manual start) so the detector lets go of the microphone; it
+     * re-arms when voice is turned off.
+     */
+    @androidx.annotation.RequiresPermission(android.Manifest.permission.RECORD_AUDIO)
+    @android.annotation.SuppressLint("MissingPermission") // the delayed start below runs under the same grant
+    fun startVoice() {
+        val wm = workMode.state.value
+        if (wm.workModeOn && !wm.isActive && workMode.startAssistance()) {
+            viewModelScope.launch {
+                delay(MIC_HANDOFF_SETTLE_MS)
+                voice.start()
+            }
+        } else {
+            voice.start()
+        }
+    }
+
+    /** Ends Work Mode assistance. With voice on, stopping voice re-arms "Hey Bob" once the mic is free. */
+    fun endAssistance() {
+        if (voice.state.value.active) voice.stop() else workMode.endAssistance()
+    }
+
     /** Addendum §5 assistance modes, from facts only. */
     val assistanceModes: StateFlow<List<ModeAvailability>> =
         combine(_online, controller.state, glasses, offline.state) { net, s, g, o ->
@@ -364,6 +414,24 @@ class BobAiViewModel @Inject constructor(
     }
 
     init {
+        viewModelScope.launch {
+            workMode.state.map { it.phase }.distinctUntilChanged().collect { phase ->
+                if (phase == WorkPhase.WAKE_DETECTED) onWakeWord()
+            }
+        }
+        viewModelScope.launch {
+            // Re-arm "Hey Bob" only after the voice session is fully off, so
+            // Bob's own voice can never wake the detector.
+            var wasActive = voice.state.value.active
+            voice.state.collect { v ->
+                val ended = wasActive && !v.active
+                wasActive = v.active
+                if (ended && workMode.state.value.isActive) {
+                    delay(MIC_HANDOFF_SETTLE_MS)
+                    if (!voice.state.value.active && workMode.state.value.isActive) workMode.endAssistance()
+                }
+            }
+        }
         refreshPairing()
         viewModelScope.launch {
             val paired = withContext(Dispatchers.IO) {
@@ -395,6 +463,8 @@ class BobAiViewModel @Inject constructor(
 
     private companion object {
         const val CAPTURE_DIR = "captures"
+        /** Time for one microphone client to close its input before the other opens. */
+        const val MIC_HANDOFF_SETTLE_MS = 300L
         const val CAPTURE_ATTEMPTS = 2
         const val RECONNECT_SETTLE_MS = 1_500L
         const val RECONNECT_TIMEOUT_MS = 8_000L

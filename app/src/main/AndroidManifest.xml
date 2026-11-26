@@ -24,6 +24,13 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Lets the app see the phone's speech recognition service (package visibility, Android 11+) -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
     <application
         android:name=".GemGlassesApp"
         android:allowBackup="false"
@@ -65,6 +72,12 @@
 
         <service
             android:name=".service.AgentForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Work Mode: listens for "Hey Bob" with the on-device recognizer while Work Mode is on -->
+        <service
+            android:name=".bobai.workmode.WakeListenService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
 

@@ -2,6 +2,7 @@ package com.lpecom.gemglasses.bobai.live
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.ActivityManager
 import android.content.Context
 import android.util.Log
 import androidx.annotation.RequiresPermission
@@ -95,6 +96,10 @@ class BobVoiceAssistant @Inject constructor(
     /** Call audio should be on the glasses (false after the silent-mic fallback). */
     @Volatile private var glassesAudioWanted = false
 
+    /** App notices waiting for the Live session to be ready; guarded by itself. */
+    private val pendingNotices = mutableListOf<String>()
+    private var sessionReady = false
+
     private val _state = MutableStateFlow(BobVoiceState())
     val state: StateFlow<BobVoiceState> = _state.asStateFlow()
 
@@ -106,11 +111,23 @@ class BobVoiceAssistant @Inject constructor(
         if (_state.value.active) return
         if (legacyAgent.running) legacyAgent.stop()
         micPaused = false
+        synchronized(pendingNotices) {
+            pendingNotices.clear()
+            sessionReady = false
+        }
         _state.value = BobVoiceState(status = VoiceStatus.CONNECTING)
         // Microphone-type foreground service: keeps the mic and socket alive
-        // when the screen locks or the app is backgrounded. Must be started
-        // while the app is visible, which it is (this runs from a tap).
-        AgentForegroundService.start(context)
+        // when the screen locks or the app is backgrounded. Android only lets
+        // it start while the app is visible (a tap). A "Hey Bob" start can
+        // happen with the screen locked; then Work Mode's own microphone
+        // service (WakeListenService, started from a tap) is already running
+        // and keeps the session alive instead.
+        if (appVisible()) {
+            runCatching { AgentForegroundService.start(context) }
+                .onFailure { Log.w(TAG, "voice foreground service not started: ${it.javaClass.simpleName}") }
+        } else {
+            Log.i(TAG, "started in the background; relying on Work Mode's microphone service")
+        }
         router.routeToGlasses()
         glassesAudioWanted = router.routedToBluetooth
         speaker.open()
@@ -137,8 +154,35 @@ class BobVoiceAssistant @Inject constructor(
         liveViewJob = null
         speaker.close()
         router.restore()
-        AgentForegroundService.stop(context)
+        runCatching { AgentForegroundService.stop(context) }
+            .onFailure { Log.w(TAG, "voice foreground service stop failed: ${it.javaClass.simpleName}") }
+        synchronized(pendingNotices) {
+            pendingNotices.clear()
+            sessionReady = false
+        }
         _state.value = BobVoiceState(transcript = _state.value.transcript)
+    }
+
+    /**
+     * Tells Bob about something the app did (not something the technician
+     * said), as a client text turn "[App notice] …". Queued until the Live
+     * session is ready; dropped if voice is off.
+     */
+    fun sendAppNotice(text: String) {
+        if (!_state.value.active) return
+        val message = "[App notice] $text"
+        val sendNow = synchronized(pendingNotices) {
+            if (!sessionReady) pendingNotices += message
+            sessionReady
+        }
+        if (sendNow) sessionKeeper.sendText(message)
+    }
+
+    private fun appVisible(): Boolean {
+        val info = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(info)
+        return info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE &&
+            info.importance != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE
     }
 
     fun setPaused(paused: Boolean) {
@@ -217,8 +261,15 @@ class BobVoiceAssistant @Inject constructor(
     private suspend fun collectEvents() {
         sessionKeeper.events.collect { event ->
             when (event) {
-                SessionEvent.Ready -> _state.update {
-                    it.copy(status = if (micPaused) VoiceStatus.PAUSED else VoiceStatus.LISTENING, lastError = null)
+                SessionEvent.Ready -> {
+                    _state.update {
+                        it.copy(status = if (micPaused) VoiceStatus.PAUSED else VoiceStatus.LISTENING, lastError = null)
+                    }
+                    val queued = synchronized(pendingNotices) {
+                        sessionReady = true
+                        pendingNotices.toList().also { pendingNotices.clear() }
+                    }
+                    queued.forEach(sessionKeeper::sendText)
                 }
                 is SessionEvent.AudioChunk -> {
                     if (!micPaused) speaker.write(event.pcm)
@@ -231,8 +282,12 @@ class BobVoiceAssistant @Inject constructor(
                 is SessionEvent.Transcript -> appendTranscript(event.fromUser, event.text)
                 is SessionEvent.ToolInvocation -> answerTools(event.calls)
                 is SessionEvent.ToolCancelled -> Log.i(TAG, "tool calls cancelled: ${event.ids}")
-                is SessionEvent.GoingAway -> _state.update { it.copy(status = VoiceStatus.RECONNECTING) }
+                is SessionEvent.GoingAway -> {
+                    synchronized(pendingNotices) { sessionReady = false }
+                    _state.update { it.copy(status = VoiceStatus.RECONNECTING) }
+                }
                 is SessionEvent.Closed -> {
+                    synchronized(pendingNotices) { sessionReady = false }
                     Log.w(TAG, "session closed: ${event.error?.message}")
                     if (event.error is DeviceRemovedException) {
                         // The session loop has ended for good: release mic, speaker and routing, go idle,

@@ -1780,7 +1780,7 @@ private fun BobVoiceCard(vm: BobAiViewModel) {
     ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
     @android.annotation.SuppressLint("MissingPermission")
-    fun startVoice() { if (micGranted()) vm.voice.start() }
+    fun startVoice() { if (micGranted()) vm.startVoice() }
 
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
@@ -1945,8 +1945,20 @@ private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
     val wm by vm.workModeState.collectAsStateWithLifecycle()
     val glasses by vm.glasses.collectAsStateWithLifecycle()
     val mode by vm.mode.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // The microphone for "Hey Bob", and on Android 13+ notifications so the
+    // ongoing "listening" notice can be shown.
+    val wanted = buildList {
+        add(android.Manifest.permission.RECORD_AUDIO)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            add(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    fun allGranted() = wanted.all {
+        androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
     ) { vm.workMode.enable() }
 
     // Permission can be revoked while the app is in the background.
@@ -1992,15 +2004,15 @@ private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
         ) {
             if (!wm.workModeOn) {
                 SecondaryAction("Enable Work Mode", {
-                    if (vm.workMode.hasMicPermission()) {
+                    if (allGranted()) {
                         vm.workMode.enable()
                     } else {
-                        permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                        permission.launch(wanted.toTypedArray())
                     }
                 })
             } else {
                 if (wm.isActive) {
-                    SecondaryAction("End assistance", { vm.workMode.endAssistance() })
+                    SecondaryAction("End assistance", { vm.endAssistance() })
                 } else if (wm.canStartManually) {
                     SecondaryAction("Start assistance", {
                         if (vm.workMode.startAssistance()) onStartAssistance()
@@ -2010,8 +2022,7 @@ private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
             }
         }
         Text(
-            "Work Mode never records or uploads idle audio. Custom \"Hey Bob\" listening needs a wake-word " +
-                "engine that hasn't been selected yet, so assistance starts from the button for now.",
+            "Say \"Hey Bob\" to start. Listening happens on this phone only; no audio is saved or uploaded.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -2045,16 +2056,18 @@ private fun WorkModeSettingsCard(vm: BobAiViewModel) {
     val wm by vm.workModeState.collectAsStateWithLifecycle()
     SectionCard(
         title = "Work Mode & Hey Bob",
-        accentTone = Tone.WARN,
-        trailingHeader = { TechnicalBadge("WAKE", "NOT INSTALLED") },
+        accentTone = if (wm.heyBobArmed || wm.isActive) Tone.OK else Tone.NEUTRAL,
+        trailingHeader = { TechnicalBadge("WAKE", "ON-DEVICE") },
     ) {
         Text("Wake-word engine: ${vm.workMode.engineName}", style = MaterialTheme.typography.bodyMedium)
         Text("Status: ${heyBobLabel(wm)}", style = MaterialTheme.typography.bodyMedium)
         Text(
-            "• Custom \"Hey Bob\" needs an on-device keyword-spotting engine. None has been chosen or tested yet " +
-                "(licence, offline start-up, false triggers, battery).\n" +
-                "• Whether the glasses microphone can be heard continuously, or only the phone microphone, is not " +
-                "yet tested.\n" +
+            "• \"Hey Bob\" uses this phone's own speech recognizer. It never uses an online recognizer; if the " +
+                "phone has none, use Start assistance.\n" +
+                "• What it hears is only checked for \"Hey Bob\" and then thrown away. No audio or words are saved " +
+                "or uploaded.\n" +
+                "• While Bob is talking with you, \"Hey Bob\" is off. It turns back on when the conversation ends.\n" +
+                "• With the glasses connected, it listens through the glasses microphone if the phone allows it.\n" +
                 "• Meta's own \"Hey Meta\" voice hand-off is a separate option in the Meta SDK. It is not the same " +
                 "as \"Hey Bob\" and is not wired up.\n" +
                 "• Listening will not resume after the app is force-stopped or the phone restarts.",

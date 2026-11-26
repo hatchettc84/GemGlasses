@@ -35,11 +35,13 @@ Point the Android app at the Worker via `GEMGLASSES_BACKEND_URL` in `local.prope
 
 ```http
 POST /token
-X-App-Secret: <secret>
+Authorization: Bearer <device key>     (paired phone)
+  or
+X-App-Secret: <secret>                 (legacy, not yet paired)
 → { "token": "...", "expiresAt": "2026-..." }
 
 POST /places
-X-App-Secret: <secret>
+Authorization: Bearer <device key>     (or X-App-Secret, as above)
 { "query": "café aberto agora", "latitude": 53.34, "longitude": -6.26 }
 → { "summary": "...", "places": [ { "title": "...", "uri": "https://maps..." } ] }
 ```
@@ -92,6 +94,13 @@ Nothing has been deployed yet. Deploy only with the owner's approval.
    Access; phones sign in with device keys.
 4. Set secrets with `npx wrangler secret put GEMINI_API_KEY` and
    `npx wrangler secret put TOKEN_APP_SECRET`.
-5. Never set `ENVIRONMENT` in production. It turns on the dev sign-in header.
-6. Check the pairing and revoke paths against the remote D1 database once
-   before real use. The tests run against the local simulator only.
+5. Never set `ENVIRONMENT` in production. It turns on the dev sign-in header
+   (which is also ignored when `ACCESS_AUD` is set or the host is not loopback).
+
+## Known limits before production
+
+Removing a phone stops its device-key access only. `TOKEN_APP_SECRET` ships in
+every app build, so any build still holding the shared secret can keep calling
+`/token` and `/places` until that secret is retired. Once every phone is
+paired, unset `TOKEN_APP_SECRET` (`npx wrangler secret delete TOKEN_APP_SECRET`)
+and remove the legacy `X-App-Secret` path from `legacyAuth` and the app.

@@ -222,7 +222,7 @@ class BobAiViewModel @Inject constructor(
         }
     }
 
-    private val _officeStatus = MutableStateFlow("Office: not paired")
+    private val _officeStatus = MutableStateFlow("Office: not synced yet")
     val officeStatus: StateFlow<String> = _officeStatus
 
     private val officeMutex = kotlinx.coroutines.sync.Mutex()
@@ -244,8 +244,11 @@ class BobAiViewModel @Inject constructor(
                         "Office: synced $time · $manuals manuals · $jobs jobs"
                     }
                     is com.lpecom.gemglasses.bobai.office.SyncOutcome.NotPaired -> "Office: not paired"
-                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed -> "Office: this phone was removed"
-                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Failed -> "Office: sync failed — ${outcome.message}"
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed -> "Office: this phone was removed. Ask your admin to pair it again."
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Failed -> {
+                        Log.w("BobAiViewModel", "office sync failed: ${outcome.message}")
+                        "Office: sync failed. Check the connection."
+                    }
                 }
             }
         }
@@ -362,8 +365,12 @@ class BobAiViewModel @Inject constructor(
 
     init {
         refreshPairing()
-        officeSync.loadCached()
         viewModelScope.launch {
+            val paired = withContext(Dispatchers.IO) {
+                officeSync.loadCached()
+                deviceKeys.get() != null
+            }
+            if (!paired) _officeStatus.value = "Office: not paired"
             while (isActive) {
                 refreshOffice()
                 delay(15.minutes)

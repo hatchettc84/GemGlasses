@@ -48,6 +48,9 @@ data class OfficeTaskRow(
 @Serializable
 data class OfficeWork(val jobs: List<OfficeJobRow>, val tasks: List<OfficeTaskRow>)
 
+/** Raised before any request is sent when this phone has no device key; device routes never use the app secret. */
+class NotPairedException : IOException("This phone is not paired with the office")
+
 interface OfficeApi {
     suspend fun knowledge(): OfficeKnowledge
     suspend fun work(): OfficeWork
@@ -83,6 +86,7 @@ class HttpOfficeApi internal constructor(
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             val builder = Request.Builder().url(baseUrl.trimEnd('/') + "/api/device/" + path).get()
             val sent = auth.authorize(builder)
+            if (sent.deviceId == null) throw NotPairedException() // never send a device route with the shared secret
             client.newCall(builder.build()).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 auth.checkResponse(sent, response.code, body)

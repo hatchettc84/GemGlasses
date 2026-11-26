@@ -119,7 +119,7 @@ class BobVoiceAssistant @Inject constructor(
         sessionKeeper.start(
             scope,
             SessionConfig(
-                systemInstruction = BobLiveTools.systemInstruction(controller.activeSession()?.equipment),
+                systemInstruction = BobLiveTools.systemInstruction(controller.activeSession()?.equipment, controller.state.value.jobs),
                 voiceName = VOICE,
                 languageCode = LANGUAGE,
                 tools = BobLiveTools.declarations,
@@ -264,6 +264,7 @@ class BobVoiceAssistant @Inject constructor(
                         val node = ps?.let { controller.engine(session)?.current(it) }
                         BobLiveTools.currentStepJson(procedure, node, ps?.paused == true)
                     }
+                    BobLiveTools.LIST_JOBS -> BobLiveTools.jobsJson(controller.state.value.jobs)
                     // Only on the technician's spoken request (system rule 5); the
                     // camera chip and frame count show on screen while it runs.
                     BobLiveTools.START_LIVE_VIEW -> BobLiveTools.liveViewJson(startLiveView())

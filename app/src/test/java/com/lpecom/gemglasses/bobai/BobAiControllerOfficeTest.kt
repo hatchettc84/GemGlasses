@@ -103,4 +103,15 @@ class BobAiControllerOfficeTest {
         val answer = c.knowledge.answer("how do I open the panel", c.activeSession()!!.equipment)
         assertTrue(answer !is EvidenceAnswer.Answer)
     }
+
+    @Test fun `an office model written with a space is known and its manual applies`() {
+        val c = controller()
+        val base = knowledge()
+        c.applyOfficeKnowledge(base.copy(documents = base.documents.map { it.copy(applicableModels = setOf("ZX 9")) }))
+        assertTrue(c.resolver.isKnownModel("ZX 9"))
+        c.startOrResume()
+        assertTrue(c.confirmEquipment("ZX 9", "SN1") is EquipmentResolver.Confirmation.Confirmed)
+        val answer = c.knowledge.answer("how do I open the panel", c.activeSession()!!.equipment)
+        assertTrue(answer is EvidenceAnswer.Answer)
+    }
 }

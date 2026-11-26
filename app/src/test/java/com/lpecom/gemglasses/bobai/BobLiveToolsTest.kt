@@ -31,7 +31,7 @@ class BobLiveToolsTest {
         // No tool may change the procedure; the only side effect is the camera.
         val names = BobLiveTools.declarations.flatMap { it.functionDeclarations.orEmpty() }.map { it.name }
         assertEquals(
-            listOf(BobLiveTools.SEARCH, BobLiveTools.CURRENT_STEP, BobLiveTools.START_LIVE_VIEW, BobLiveTools.STOP_LIVE_VIEW),
+            listOf(BobLiveTools.SEARCH, BobLiveTools.CURRENT_STEP, BobLiveTools.START_LIVE_VIEW, BobLiveTools.LIST_JOBS, BobLiveTools.STOP_LIVE_VIEW),
             names,
         )
     }

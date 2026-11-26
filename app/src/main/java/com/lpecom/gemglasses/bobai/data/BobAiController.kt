@@ -327,8 +327,13 @@ class BobAiController(
 
     /** Installs the approved manuals downloaded from the office as the "office-approved" pack. */
     fun applyOfficeKnowledge(k: OfficeKnowledge) {
-        val docs = k.documents.map { it.copy(packId = OFFICE_PACK_ID, isMock = false) }
-        officeModels = docs.flatMap { d -> d.applicableModels.map { resolver.normalizeModel(it) to d.title } }.toMap()
+        val docs = k.documents.map { d ->
+            d.copy(
+                packId = OFFICE_PACK_ID, isMock = false,
+                applicableModels = d.applicableModels.map { resolver.normalizeModel(it) }.toSet(),
+            )
+        }
+        officeModels = docs.flatMap { d -> d.applicableModels.map { it to d.title } }.toMap()
         officeTenant = k.tenantId
         officeExpiresAt = k.expiresAt
         officeDocs = docs

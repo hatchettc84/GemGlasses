@@ -1289,7 +1289,7 @@ fun JobsScreen(vm: BobAiViewModel, nav: NavHostController) {
         }
         ScrollPage {
             Text(
-                "Jobs are stored on this device only. Sync is not implemented yet.",
+                "Jobs from the office appear here when this phone is paired. Jobs you start on this phone stay on it.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1297,10 +1297,14 @@ fun JobsScreen(vm: BobAiViewModel, nav: NavHostController) {
             snapshot.jobs.sortedByDescending { it.updatedAt }.forEach { j ->
                 val done = j.status.name == "COMPLETED"
                 SectionCard(
-                    title = j.site,
+                    title = j.title.ifBlank { j.site },
                     accentTone = if (done) Tone.OK else Tone.WARN,
                     trailingHeader = { TechnicalBadge("WO#", j.id.takeLast(8).uppercase()) },
                 ) {
+                    if (j.title.isNotBlank()) Text(j.site)
+                    j.dueAt?.let { Text("Due $it") }
+                    if (j.description.isNotBlank()) Text(j.description)
+                    j.tasks.forEach { t -> Text((if (t.done) "[x] " else "[ ] ") + t.title) }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         StatusChip(
                             j.status.name.lowercase().replace('_', ' '),

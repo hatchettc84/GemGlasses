@@ -46,6 +46,8 @@ class OfficeSync(
             SyncOutcome.Synced
         } catch (e: DeviceRemovedException) {
             SyncOutcome.Removed
+        } catch (e: NotPairedException) {
+            SyncOutcome.NotPaired
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

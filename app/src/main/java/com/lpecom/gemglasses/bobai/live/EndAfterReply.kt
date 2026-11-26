@@ -6,48 +6,98 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Ends the voice session after Bob's goodbye, once Bob called
- * `end_conversation`: [graceMs] after the next completed turn (so the goodbye
- * finishes playing), or after [fallbackMs] if no turn completes.
- * Pure coroutine timing, so it is JVM tested.
+ * Ends the voice session after Bob's goodbye, once Bob called `end_conversation`.
+ *
+ * - Goodbye audio ([onAudio]) arrives after the tool call, then its turn completes: wait until the
+ *   speaker has played everything queued ([pendingPlaybackMs] reaches 0), then [graceMs], then end.
+ * - If a turn completes before any goodbye audio (the turn that carried the tool call), keep
+ *   waiting for the next reply.
+ * - [fallbackMs] after the tool call with no completed goodbye turn: end anyway, but let any
+ *   goodbye audio already queued finish playing first (plus [graceMs]).
+ *
+ * Calls come from the Live event collector and from stop() on any thread; all state is guarded
+ * by one lock, and a generation number makes sure a cancelled or replaced timer never ends a
+ * later session. Pure coroutine timing, so it is JVM tested.
  */
 class EndAfterReply(
     private val scope: CoroutineScope,
+    private val pendingPlaybackMs: () -> Long,
     private val graceMs: Long = GRACE_MS,
     private val fallbackMs: Long = FALLBACK_MS,
     private val end: () -> Unit,
 ) {
+    private val lock = Any()
     private var pending: Job? = null
+    private var generation = 0L
+    private var sawAudio = false
+    private var draining = false
+    private var _requested = false
 
-    @Volatile var requested = false
-        private set
+    /** Bob called end_conversation and the session has not ended yet. */
+    val requested: Boolean get() = synchronized(lock) { _requested }
 
     /** Bob called end_conversation; its reply is still to come. */
-    fun request() {
-        if (requested) return
-        requested = true
-        schedule(fallbackMs)
+    fun request() = synchronized(lock) {
+        if (_requested) return@synchronized
+        _requested = true
+        sawAudio = false
+        draining = false
+        schedule(drainFirst = null, afterMs = fallbackMs)
+    }
+
+    /** A chunk of Bob's audio was written to the speaker. */
+    fun onAudio() = synchronized(lock) {
+        if (_requested) sawAudio = true
     }
 
     /** A model turn completed (after the tool response was sent). */
-    fun onTurnComplete() {
-        if (requested) schedule(graceMs)
+    fun onTurnComplete() = synchronized(lock) {
+        // No goodbye audio yet: this was the tool call's own turn; wait for the reply.
+        if (!_requested || !sawAudio || draining) return@synchronized
+        draining = true
+        schedule(drainFirst = true, afterMs = 0)
     }
 
     /** The session stopped another way: forget the request. */
-    fun reset() {
-        requested = false
+    fun reset() = synchronized(lock) {
+        _requested = false
+        sawAudio = false
+        draining = false
+        generation++
         pending?.cancel()
         pending = null
     }
 
-    private fun schedule(afterMs: Long) {
+    /**
+     * Must hold [lock]. [drainFirst] null means "decide when the timer fires" (the fallback):
+     * drain if goodbye audio arrived by then.
+     */
+    private fun schedule(drainFirst: Boolean?, afterMs: Long) {
+        val gen = ++generation
         pending?.cancel()
         pending = scope.launch {
             delay(afterMs)
-            requested = false
-            pending = null
-            end()
+            val drain = drainFirst ?: synchronized(lock) { generation == gen && sawAudio }
+            if (drain) {
+                while (true) {
+                    val left = pendingPlaybackMs()
+                    if (left <= 0) break
+                    delay(left)
+                }
+                delay(graceMs)
+            }
+            val go = synchronized(lock) {
+                if (generation != gen) {
+                    false
+                } else {
+                    _requested = false
+                    sawAudio = false
+                    draining = false
+                    pending = null
+                    true
+                }
+            }
+            if (go) end()
         }
     }
 

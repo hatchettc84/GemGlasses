@@ -112,8 +112,8 @@ class BobVoiceAssistant @Inject constructor(
         lastActivityAt = android.os.SystemClock.elapsedRealtime()
     }
 
-    /** Bob called end_conversation: stop after its goodbye. */
-    private val endAfterReply = EndAfterReply(scope) {
+    /** Bob called end_conversation: stop once its goodbye has finished playing. */
+    private val endAfterReply = EndAfterReply(scope, speaker::pendingPlaybackMs) {
         Log.i(TAG, "ending the session: the technician said goodbye")
         stop()
     }
@@ -296,6 +296,7 @@ class BobVoiceAssistant @Inject constructor(
                 is SessionEvent.AudioChunk -> {
                     touch()
                     if (!micPaused) speaker.write(event.pcm)
+                    endAfterReply.onAudio()
                     _state.update { if (it.status == VoiceStatus.LISTENING) it.copy(status = VoiceStatus.SPEAKING) else it }
                 }
                 SessionEvent.Interrupted -> {

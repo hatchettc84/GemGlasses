@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
 import { documentFileUrl, useDocumentPages, useDocuments, useMe, useReviewDocument, useUploadDocument } from "../api/hooks";
 import type { ManualDoc } from "../api/types";
 
@@ -80,6 +80,8 @@ function DocumentsTable({ docs, canReview }: { docs: ManualDoc[]; canReview: boo
   const [open, setOpen] = useState<string | null>(null);
   // Drafts whose extracted text the reviewer has opened: only those can be approved.
   const [read, setRead] = useState<ReadonlySet<string>>(new Set());
+  // Stable, so DocumentText's effect runs when its text loads, not on every render.
+  const markRead = useCallback((id: string) => setRead((r) => (r.has(id) ? r : new Set(r).add(id))), []);
   if (docs.length === 0) return <p className="muted">No manuals yet.</p>;
   return (
     <>
@@ -128,7 +130,7 @@ function DocumentsTable({ docs, canReview }: { docs: ManualDoc[]; canReview: boo
               {open === d.id && (
                 <tr>
                   <td colSpan={5}>
-                    <DocumentText doc={d} onLoaded={() => setRead((r) => (r.has(d.id) ? r : new Set(r).add(d.id)))} />
+                    <DocumentText doc={d} onLoaded={markRead} />
                   </td>
                 </tr>
               )}
@@ -141,12 +143,12 @@ function DocumentsTable({ docs, canReview }: { docs: ManualDoc[]; canReview: boo
 }
 
 /** The page text Bob will quote, exactly as extracted; reviewers read it before approving. */
-function DocumentText({ doc, onLoaded }: { doc: ManualDoc; onLoaded: () => void }) {
+function DocumentText({ doc, onLoaded }: { doc: ManualDoc; onLoaded: (id: string) => void }) {
   const pages = useDocumentPages(doc.id, doc.version);
   const loaded = pages.isSuccess;
   useEffect(() => {
-    if (loaded) onLoaded();
-  }, [loaded, onLoaded]);
+    if (loaded) onLoaded(doc.id);
+  }, [loaded, onLoaded, doc.id]);
   return (
     <section id={`text-${doc.id}`} className="card" aria-label={`Extracted text of ${doc.title}`}>
       <h2>Extracted text: {doc.title} rev {doc.revision}</h2>

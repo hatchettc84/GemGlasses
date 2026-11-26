@@ -95,8 +95,13 @@ fieldOperations.get("/documents/:id/file", async (c) => {
   if (!obj) throw new ApiError(404, "not_found", "File unavailable.");
   return new Response(obj.body, {
     headers: {
-      "Content-Type": row.content_type,
+      "Content-Type":
+        row.content_type === "text/plain"
+          ? "text/plain; charset=utf-8"
+          : row.content_type,
       "Content-Disposition": `attachment; filename="${row.filename}"`,
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
     },
   });
 });

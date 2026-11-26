@@ -108,6 +108,8 @@ operations.patch("/jobs/:id", requireRole("admin", "dispatcher"), async (c) => {
   const u = c.get("user"),
     b = await readJson<Record<string, unknown>>(c),
     id = c.req.param("id");
+  if (!Number.isInteger(b.revision))
+    throw new ApiError(400, "bad_request", "Include the job's current revision.");
   const row = await c.env.DB.prepare(
     "SELECT * FROM jobs WHERE tenant_id=? AND id=?",
   )
@@ -191,6 +193,12 @@ operations.patch(
         "invalid_input",
         "Include completed and revision.",
       );
+    if (
+      !(await c.env.DB.prepare("SELECT id FROM tasks WHERE tenant_id=? AND id=?")
+        .bind(u.tenantId, id)
+        .first())
+    )
+      throw new ApiError(404, "not_found", "Task not found.");
     const applied = await guardedUpdate(
       c.env.DB,
       "tasks",

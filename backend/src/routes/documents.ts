@@ -5,6 +5,7 @@ import { requireRole } from "../auth/admin";
 import { ApiError, readJson } from "../lib/errors";
 import { actorFromUser, auditStmt, guardedUpdate } from "../lib/audit";
 import { nowIso, ulid } from "../lib/ids";
+import { extractPdfPages } from "../lib/pdf-text";
 import { text } from "./operations";
 
 export const documents = new Hono<AppEnv>();
@@ -115,6 +116,22 @@ documents.post(
           "Text files are limited to 100,000 characters.",
         );
       pages = [{ number: 1, heading: title, body }];
+    } else if (contentType === "application/pdf") {
+      try {
+        pages = await extractPdfPages(new Uint8Array(bytes));
+      } catch {
+        throw new ApiError(
+          400,
+          "invalid_file",
+          "This PDF could not be read. Upload an unprotected, uncorrupted PDF.",
+        );
+      }
+      if (!pages.length)
+        throw new ApiError(
+          422,
+          "no_text_layer",
+          "This PDF has no text (it may be a scan). Upload a text PDF; scanned manuals are not supported yet.",
+        );
     }
     const models = String(form.get("models") ?? "")
       .split(",")
@@ -176,6 +193,11 @@ documents.post(
     return c.json({ id, status: "draft" }, 201);
   },
 );
+// Allowed previous statuses for each target status.
+const ALLOWED_FROM: Record<string, string[]> = {
+  approved: ["draft"],
+  revoked: ["draft", "approved"],
+};
 documents.patch(
   "/documents/:id",
   requireRole("admin", "reviewer"),
@@ -201,6 +223,13 @@ documents.patch(
         "stale",
         "Document changed. Refresh before reviewing.",
       );
+    const from = ALLOWED_FROM[String(b.status)] ?? [];
+    if (!from.includes(row.status))
+      throw new ApiError(
+        409,
+        "bad_transition",
+        `A ${row.status} document cannot be changed to ${b.status}. Allowed: draft to approved, draft to revoked, approved to revoked.`,
+      );
     if (b.status === "approved" && !JSON.parse(row.pages_json).length)
       throw new ApiError(
         400,
@@ -212,8 +241,8 @@ documents.patch(
       "documents",
       "status=?,version=version+1,reviewed_by=?,updated_at=?",
       [b.status, u.id, nowIso()],
-      "tenant_id=? AND id=? AND version=?",
-      [u.tenantId, id, b.version],
+      `tenant_id=? AND id=? AND version=? AND status IN (${from.map(() => "?").join(",")})`,
+      [u.tenantId, id, b.version, ...from],
       { actor: actorFromUser(u), action: "document.reviewed", entity: "document", entityId: id, before: { status: row.status }, after: { status: b.status } },
     );
     if (!applied)

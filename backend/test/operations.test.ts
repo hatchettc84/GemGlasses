@@ -1,6 +1,10 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import { api, auditActions, BOSS, seedUser } from "./helpers";
+import { EMPTY_PDF, TWO_PAGES_PDF } from "./fixtures/pdfs";
+
+const pdfFile = (b64: string, name = "manual.pdf") =>
+  new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], name, { type: "application/pdf" });
 
 async function device(email = "tech@example.com") {
   const userId = await seedUser(email, "technician");
@@ -75,6 +79,19 @@ describe("assigned work", () => {
     ]);
     expect([a.status, b.status].sort()).toEqual([200, 409]);
     expect((await auditActions()).filter((x) => x === "job.updated")).toHaveLength(1);
+  });
+
+  it("admin PATCH of a missing task is 404; admin job PATCH needs an integer revision", async () => {
+    const missing = await patch("/tasks/nope", { completed: true, revision: 1 });
+    expect(missing.status).toBe(404);
+    expect((await missing.json()).error).toBe("not_found");
+    const tech = await device();
+    const { job } = await (await post("/jobs", { title: "J", site: "S", assignedUserId: tech.userId })).json();
+    for (const body of [{ status: "in_progress" }, { status: "in_progress", revision: "1" }, { status: "in_progress", revision: 1.5 }]) {
+      const res = await patch(`/jobs/${job.id}`, body);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("bad_request");
+    }
   });
 
   it("enforces management roles and validates technicians", async () => {
@@ -152,15 +169,85 @@ describe("document approval pipeline", () => {
     expect((await api("/api/admin/documents", { as: "tech2@example.com" })).status).toBe(403);
   });
 
-  it("does not approve PDFs without source page text", async () => {
-    const res = await upload(
-      { title: "Manual", revision: "1", models: "X" },
-      new File(["%PDF-1.4 test"], "manual.pdf", { type: "application/pdf" }),
-    );
-    const { id } = await res.json();
+  it("does not approve a document that has no source page text", async () => {
+    const { id } = await (await manual()).json();
+    await env.DB.prepare("UPDATE documents SET pages_json='[]' WHERE id=?").bind(id).run();
     const approve = await patch(`/documents/${id}`, { status: "approved", version: 1 });
     expect(approve.status).toBe(400);
     expect((await approve.json()).error).toBe("source_text_required");
+  });
+
+  it("extracts page text from an uploaded PDF without pasted text", async () => {
+    const res = await upload({ title: "Manual", revision: "1", models: "X" }, pdfFile(TWO_PAGES_PDF));
+    expect(res.status).toBe(201);
+    const { id } = await res.json();
+    const row = await env.DB.prepare("SELECT pages_json FROM documents WHERE id=?").bind(id).first<{ pages_json: string }>();
+    const pages = JSON.parse(row!.pages_json);
+    expect(pages).toHaveLength(2);
+    expect(pages[0]).toMatchObject({ number: 1 });
+    expect(pages[0].body).toContain("torque 12 Nm");
+    expect(pages[1].body).toContain("reset the breaker");
+    expect((await patch(`/documents/${id}`, { status: "approved", version: 1 })).status).toBe(200);
+  });
+
+  it("rejects a PDF with no text layer (422) and stores nothing", async () => {
+    const res = await upload({ title: "Scan", revision: "1", models: "X" }, pdfFile(EMPTY_PDF, "scan.pdf"));
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error).toBe("no_text_layer");
+    expect(body.message).toContain("scanned manuals are not supported yet");
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM documents").first<{ n: number }>())!.n).toBe(0);
+  });
+
+  it("keeps pasted text for a text-less PDF and rejects an unreadable PDF", async () => {
+    const pasted = await upload({ title: "Scan", revision: "1", models: "X", pageText: "Typed from the scan." }, pdfFile(EMPTY_PDF, "scan.pdf"));
+    expect(pasted.status).toBe(201);
+    const bad = await upload({ title: "Bad", revision: "1", models: "X" }, new File(["%PDF-1.4 not really"], "bad.pdf", { type: "application/pdf" }));
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toBe("invalid_file");
+  });
+
+  it("only allows draft to approved, draft to revoked and approved to revoked", async () => {
+    const bad = async (id: string, status: string, version: number) => {
+      const res = await patch(`/documents/${id}`, { status, version });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe("bad_transition");
+      expect(typeof body.message).toBe("string");
+    };
+    const a = (await (await manual()).json()).id;
+    await bad(a, "draft", 1); // same -> same
+    expect((await patch(`/documents/${a}`, { status: "approved", version: 1 })).status).toBe(200);
+    await bad(a, "approved", 2);
+    await bad(a, "draft", 2); // approved -> draft
+    expect((await patch(`/documents/${a}`, { status: "revoked", version: 2 })).status).toBe(200);
+    await bad(a, "approved", 3); // revoked -> approved
+    await bad(a, "revoked", 3);
+    await bad(a, "draft", 3);
+    const d = (await (await manual()).json()).id;
+    expect((await patch(`/documents/${d}`, { status: "revoked", version: 1 })).status).toBe(200);
+    // The status is also guarded in the SQL, so a raced change cannot be overwritten.
+    const e = (await (await manual()).json()).id;
+    await env.DB.prepare("UPDATE documents SET status='revoked' WHERE id=?").bind(e).run();
+    expect((await patch(`/documents/${e}`, { status: "approved", version: 1 })).status).toBe(409);
+    expect((await env.DB.prepare("SELECT status FROM documents WHERE id=?").bind(e).first<{ status: string }>())!.status).toBe("revoked");
+  });
+
+  it("serves device files with nosniff, no-store and an explicit text charset", async () => {
+    const tech = await device();
+    const { id } = await (await manual()).json();
+    await patch(`/documents/${id}`, { status: "approved", version: 1 });
+    const res = await api(`/api/device/documents/${id}/file`, { headers: tech.headers });
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    await res.arrayBuffer();
+    const pdf = await (await upload({ title: "P", revision: "1", models: "X" }, pdfFile(TWO_PAGES_PDF))).json();
+    await patch(`/documents/${pdf.id}`, { status: "approved", version: 1 });
+    const pres = await api(`/api/device/documents/${pdf.id}/file`, { headers: tech.headers });
+    expect(pres.headers.get("content-type")).toBe("application/pdf");
+    expect(pres.headers.get("x-content-type-options")).toBe("nosniff");
+    await pres.arrayBuffer();
   });
 
   it("rejects unsupported file types", async () => {

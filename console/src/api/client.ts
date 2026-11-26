@@ -10,13 +10,16 @@ export class ApiError extends Error {
 
 /** Calls the console API. Errors carry the server's plain-language message. */
 export async function apiFetch<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  const method = init.method ?? "GET";
+  const mutating = method !== "GET" && method !== "HEAD";
+  // Mutating calls always declare JSON (body "{}" when empty): the Worker's CSRF guard requires it.
   const hasBody = init.body !== undefined;
   let res: Response;
   try {
     res = await fetch(`/api/admin${path}`, {
-      method: init.method ?? "GET",
-      headers: hasBody ? { "content-type": "application/json" } : undefined,
-      body: hasBody ? JSON.stringify(init.body) : undefined,
+      method,
+      headers: hasBody || mutating ? { "content-type": "application/json" } : undefined,
+      body: hasBody ? JSON.stringify(init.body) : mutating ? "{}" : undefined,
       credentials: "same-origin",
     });
   } catch {

@@ -9,6 +9,19 @@ describe("apiFetch", () => {
     expect(await apiFetch("/x")).toEqual({ a: 1 });
   });
 
+  it("sends JSON content-type (and {} body) on bodyless mutating calls only", async () => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await apiFetch("/x", { method: "POST" });
+    await apiFetch("/x");
+    const [, post] = f.mock.calls[0] as unknown as [string, RequestInit];
+    const [, get] = f.mock.calls[1] as unknown as [string, RequestInit];
+    expect(post.headers).toEqual({ "content-type": "application/json" });
+    expect(post.body).toBe("{}");
+    expect(get.headers).toBeUndefined();
+    expect(get.body).toBeUndefined();
+  });
+
   it("rejects an empty 200 with bad_response", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
     await expect(apiFetch("/x")).rejects.toMatchObject({ code: "bad_response" });

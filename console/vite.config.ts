@@ -12,6 +12,8 @@ export default defineConfig({
         target: "http://127.0.0.1:8787",
         configure: (proxy) => {
           proxy.on("proxyReq", (proxyReq) => {
+            // The browser's Origin is the Vite server; present it as same-origin to the Worker's CSRF guard.
+            if (proxyReq.getHeader("origin")) proxyReq.setHeader("origin", "http://127.0.0.1:8787");
             const email = process.env.DEV_USER_EMAIL;
             if (email) proxyReq.setHeader("X-Dev-User-Email", email);
           });

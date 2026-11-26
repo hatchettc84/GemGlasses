@@ -12,3 +12,29 @@ export interface Device {
   user: { id: string; name: string; email: string };
 }
 export interface PairingCode { code: string; expiresAt: string }
+
+export interface Technician { id: string; name: string; email: string }
+export type JobStatus = "open" | "in_progress" | "completed";
+export interface Job {
+  id: string;
+  title: string;
+  site: string;
+  description: string;
+  assigned_user_id: string | null;
+  assigned_name: string | null;
+  status: JobStatus;
+  revision: number;
+  due_at: string | null;
+}
+export interface Task { id: string; job_id: string; title: string; completed: number; revision: number }
+export type DocStatus = "draft" | "approved" | "revoked";
+export interface ManualDoc {
+  id: string;
+  title: string;
+  revision: string;
+  filename: string;
+  models: string[];
+  status: DocStatus;
+  version: number;
+  size_bytes: number;
+}

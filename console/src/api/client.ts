@@ -13,13 +13,15 @@ export async function apiFetch<T>(path: string, init: { method?: string; body?: 
   const method = init.method ?? "GET";
   const mutating = method !== "GET" && method !== "HEAD";
   // Mutating calls always declare JSON (body "{}" when empty): the Worker's CSRF guard requires it.
+  // FormData is sent as-is: the browser sets the multipart Content-Type (with its boundary).
+  const isForm = init.body instanceof FormData;
   const hasBody = init.body !== undefined;
   let res: Response;
   try {
     res = await fetch(`/api/admin${path}`, {
       method,
-      headers: hasBody || mutating ? { "content-type": "application/json" } : undefined,
-      body: hasBody ? JSON.stringify(init.body) : mutating ? "{}" : undefined,
+      headers: isForm ? undefined : hasBody || mutating ? { "content-type": "application/json" } : undefined,
+      body: isForm ? (init.body as FormData) : hasBody ? JSON.stringify(init.body) : mutating ? "{}" : undefined,
       credentials: "same-origin",
     });
   } catch {
@@ -42,4 +44,8 @@ export async function apiFetch<T>(path: string, init: { method?: string; body?: 
     throw new ApiError(res.status, "bad_response", "The server sent a reply the console couldn't read. Refresh the page and sign in again.");
   }
   return data as T;
+}
+
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  return apiFetch<T>(path, { method: "POST", body: form });
 }

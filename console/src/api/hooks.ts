@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "./client";
-import type { Device, Me, PairingCode, Role, User } from "./types";
+import { apiFetch, apiUpload } from "./client";
+import type { Device, DocStatus, Job, JobStatus, ManualDoc, Me, PairingCode, Role, Task, Technician, User } from "./types";
 
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => apiFetch<Me>("/me") });
 
@@ -29,5 +29,67 @@ export function useRevokeDevice() {
   return useMutation({
     mutationFn: (deviceId: string) => apiFetch<{ device: Device }>(`/devices/${deviceId}/revoke`, { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["devices"] }),
+  });
+}
+
+export const useJobs = (enabled: boolean) =>
+  useQuery({ queryKey: ["jobs"], queryFn: () => apiFetch<{ jobs: Job[]; tasks: Task[] }>("/jobs"), enabled });
+
+export const useTeam = (enabled: boolean) =>
+  useQuery({ queryKey: ["team"], queryFn: () => apiFetch<{ technicians: Technician[] }>("/team"), enabled });
+
+export function useCreateJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { title: string; site: string; description: string; assignedUserId: string; dueAt: string | null }) =>
+      apiFetch<{ job: Job }>("/jobs", { method: "POST", body: input }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
+export function useUpdateJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; revision: number; status: JobStatus }) =>
+      apiFetch<{ job: Job }>(`/jobs/${id}`, { method: "PATCH", body }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
+export function useAddTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, title }: { jobId: string; title: string }) =>
+      apiFetch<{ id: string }>(`/jobs/${jobId}/tasks`, { method: "POST", body: { title } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
+export function useSetTaskDone() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; revision: number; completed: boolean }) =>
+      apiFetch<{ ok: true }>(`/tasks/${id}`, { method: "PATCH", body }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
+export const useDocuments = (enabled: boolean) =>
+  useQuery({ queryKey: ["documents"], queryFn: () => apiFetch<{ documents: ManualDoc[] }>("/documents"), enabled });
+
+export function useUploadDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (form: FormData) => apiUpload<{ id: string; status: DocStatus }>("/documents", form),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["documents"] }),
+  });
+}
+
+export function useReviewDocument() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, status, version }: { id: string; status: DocStatus; version: number }) =>
+      apiFetch<{ ok: true }>(`/documents/${id}`, { method: "PATCH", body: { status, version } }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["documents"] }),
   });
 }

@@ -1,4 +1,6 @@
 import { NavLink, Route, Routes } from "react-router-dom";
+import { JobsPage } from "./pages/JobsPage";
+import { ManualsPage } from "./pages/ManualsPage";
 import { PeoplePage } from "./pages/PeoplePage";
 
 export function App() {
@@ -7,12 +9,16 @@ export function App() {
       <header>
         <strong>BobAI Console</strong>
         <nav>
-          <NavLink to="/">People</NavLink>
+          <NavLink to="/" end>People</NavLink>
+          <NavLink to="/jobs">Jobs</NavLink>
+          <NavLink to="/manuals">Manuals</NavLink>
         </nav>
       </header>
       <main>
         <Routes>
           <Route path="/" element={<PeoplePage />} />
+          <Route path="/jobs" element={<JobsPage />} />
+          <Route path="/manuals" element={<ManualsPage />} />
         </Routes>
       </main>
     </div>

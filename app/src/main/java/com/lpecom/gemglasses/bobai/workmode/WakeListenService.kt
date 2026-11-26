@@ -18,6 +18,13 @@ import androidx.core.content.ContextCompat
 import com.lpecom.gemglasses.MainActivity
 import com.lpecom.gemglasses.R
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
@@ -37,15 +44,18 @@ class WakeListenService : Service() {
     @Inject lateinit var workMode: WorkModeController
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var text = listenNotificationText(WorkPhase.ARMED)
+    private var scope: CoroutineScope? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        pending = true
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_TURN_OFF) {
-            // disable() stops this service; stopSelf too in case it was only
-            // started for this action.
-            workMode.disable()
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        // Every start, including a stop request, goes through startForeground
+        // first: the service was started with startForegroundService, and
+        // Android crashes the app if it stops without ever calling it.
         val started = runCatching {
             ServiceCompat.startForeground(
                 this,
@@ -54,12 +64,35 @@ class WakeListenService : Service() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0,
             )
         }
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_TURN_OFF) {
+            // disable() asks to stop this service; stopSelf too in case it was
+            // only started for this action.
+            workMode.disable()
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (started.isFailure) {
             Log.w(TAG, "could not start listening in the foreground: ${started.exceptionOrNull()?.javaClass?.simpleName}")
             stopSelf()
             return START_NOT_STICKY
         }
         acquireWakeLock()
+        if (scope == null) {
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { sc ->
+                sc.launch {
+                    workMode.state.map { listenNotificationText(it.phase) }.distinctUntilChanged().collect { t ->
+                        text = t
+                        runCatching {
+                            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
+                        }
+                    }
+                }
+            }
+        }
         // Not sticky: after the OS kills the process Work Mode state is gone,
         // so a restarted service would listen for nothing.
         return START_NOT_STICKY
@@ -72,6 +105,9 @@ class WakeListenService : Service() {
     }
 
     override fun onDestroy() {
+        pending = false
+        scope?.cancel()
+        scope = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         super.onDestroy()
@@ -106,8 +142,8 @@ class WakeListenService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Work Mode is on")
-            .setContentText(TEXT)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(TEXT))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setSmallIcon(R.drawable.ic_glasses)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -133,15 +169,30 @@ class WakeListenService : Service() {
         private const val NOTIFICATION_ID = 43
         private const val ACTION_TURN_OFF = "com.lpecom.gemglasses.bobai.WORK_MODE_OFF"
         private const val WAKELOCK_TIMEOUT_MS = 10L * 60L * 60L * 1000L // a long shift
-        const val TEXT = "BobAI is listening for \"Hey Bob\". No audio is saved."
+        private const val ACTION_STOP = "com.lpecom.gemglasses.bobai.WORK_MODE_STOP"
+
+        /** True from a successful [start] until the service is destroyed, so [stop] never starts one just to stop it. */
+        @Volatile private var pending = false
 
         /** Call from a user action while the app is visible. Returns false if Android refused. */
         fun start(context: Context): Boolean = runCatching {
             ContextCompat.startForegroundService(context, Intent(context, WakeListenService::class.java))
-        }.onFailure { Log.w(TAG, "could not start: ${it.javaClass.simpleName}") }.isSuccess
+        }.onFailure { Log.w(TAG, "could not start: ${it.javaClass.simpleName}") }
+            .isSuccess.also { if (it) pending = true }
 
+        /**
+         * Asks the service to stop with a start command rather than stopService,
+         * so a service whose startForeground hasn't run yet still calls it
+         * (see [onStartCommand]) before it stops. If Android won't start it
+         * from here, falls back to stopService.
+         */
         fun stop(context: Context) {
-            context.stopService(Intent(context, WakeListenService::class.java))
+            if (!pending) return
+            val intent = Intent(context, WakeListenService::class.java).setAction(ACTION_STOP)
+            runCatching { ContextCompat.startForegroundService(context, intent) }.onFailure {
+                Log.w(TAG, "stop request refused, stopping directly: ${it.javaClass.simpleName}")
+                context.stopService(Intent(context, WakeListenService::class.java))
+            }
         }
     }
 }

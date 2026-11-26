@@ -10,6 +10,8 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8787",
+        // Send Host: 127.0.0.1:8787 so the Worker's own origin matches the rewritten Origin below.
+        changeOrigin: true,
         configure: (proxy) => {
           proxy.on("proxyReq", (proxyReq) => {
             // The browser's Origin is the Vite server; present it as same-origin to the Worker's CSRF guard.

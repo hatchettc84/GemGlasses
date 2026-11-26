@@ -59,6 +59,18 @@ object AppModule {
         })
     }
 
+    /** Downloads approved manuals and assigned jobs for Bob; caches them under files/bobai/office. */
+    @Provides
+    @Singleton
+    fun officeSync(
+        @ApplicationContext context: Context,
+        api: com.lpecom.gemglasses.bobai.office.OfficeApi,
+        controller: BobAiController,
+        keyStore: com.lpecom.gemglasses.bobai.sync.DeviceKeyStore,
+    ): com.lpecom.gemglasses.bobai.office.OfficeSync = com.lpecom.gemglasses.bobai.office.OfficeSync(
+        api, File(context.filesDir, "bobai/office"), controller,
+    ) { keyStore.get() != null }
+
     /**
      * Selects the glasses backend at runtime. The real Meta DAT backend is
      * loaded reflectively so `src/main` never references the SDK — that keeps
@@ -83,6 +95,9 @@ object AppModule {
 abstract class BindsModule {
     @Binds
     abstract fun visionController(bridge: VisionBridge): VisionController
+
+    @Binds
+    abstract fun officeApi(impl: com.lpecom.gemglasses.bobai.office.HttpOfficeApi): com.lpecom.gemglasses.bobai.office.OfficeApi
 
     @Binds
     abstract fun deviceKeyStore(impl: com.lpecom.gemglasses.bobai.sync.KeystoreDeviceKeyStore): com.lpecom.gemglasses.bobai.sync.DeviceKeyStore

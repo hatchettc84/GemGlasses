@@ -37,6 +37,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.withLock
+import kotlin.time.Duration.Companion.minutes
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -63,6 +66,7 @@ class BobAiViewModel @Inject constructor(
     val offline: com.lpecom.gemglasses.bobai.offline.OfflineAssistant,
     private val pairingClient: com.lpecom.gemglasses.bobai.sync.PairingClient,
     private val deviceKeys: com.lpecom.gemglasses.bobai.sync.DeviceKeyStore,
+    private val officeSync: com.lpecom.gemglasses.bobai.office.OfficeSync,
 ) : AndroidViewModel(application) {
 
     /** Loads the on-device model (pushed with adb for the spike) and runs its self-test. */
@@ -218,6 +222,35 @@ class BobAiViewModel @Inject constructor(
         }
     }
 
+    private val _officeStatus = MutableStateFlow("Office: not paired")
+    val officeStatus: StateFlow<String> = _officeStatus
+
+    private val officeMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** Pulls manuals and jobs from the office and updates [officeStatus]. Never throws. */
+    fun refreshOffice() {
+        viewModelScope.launch {
+            officeMutex.withLock {
+                val outcome = withContext(Dispatchers.IO) {
+                    if (deviceKeys.wasRemoved()) com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed
+                    else officeSync.syncNow()
+                }
+                _officeStatus.value = when (outcome) {
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Synced -> {
+                        val s = controller.state.value
+                        val manuals = s.packs.firstOrNull { it.id == com.lpecom.gemglasses.bobai.data.OFFICE_PACK_ID }?.documentIds?.size ?: 0
+                        val jobs = s.jobs.count { it.officeId != null }
+                        val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date())
+                        "Office: synced $time · $manuals manuals · $jobs jobs"
+                    }
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.NotPaired -> "Office: not paired"
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed -> "Office: this phone was removed"
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Failed -> "Office: sync failed — ${outcome.message}"
+                }
+            }
+        }
+    }
+
     /** Pairs this phone with the office console using a 6-digit code from an admin. */
     fun pairPhone(code: String) {
         if (_pairing.value.busy) return
@@ -226,8 +259,10 @@ class BobAiViewModel @Inject constructor(
         viewModelScope.launch {
             val result = try {
                 when (val r = pairingClient.pair(code, android.os.Build.MODEL)) {
-                    is com.lpecom.gemglasses.bobai.sync.PairResult.Paired ->
+                    is com.lpecom.gemglasses.bobai.sync.PairResult.Paired -> {
+                        refreshOffice()
                         PairingUi(paired = true, userName = r.userName, message = "Paired to ${r.userName}.")
+                    }
                     is com.lpecom.gemglasses.bobai.sync.PairResult.Rejected -> PairingUi(message = r.message)
                     is com.lpecom.gemglasses.bobai.sync.PairResult.Failed -> PairingUi(message = r.message)
                 }
@@ -327,6 +362,13 @@ class BobAiViewModel @Inject constructor(
 
     init {
         refreshPairing()
+        officeSync.loadCached()
+        viewModelScope.launch {
+            while (isActive) {
+                refreshOffice()
+                delay(15.minutes)
+            }
+        }
         runCatching { connectivity.registerDefaultNetworkCallback(callback) }
             .onFailure { Log.w("BobAiViewModel", "network callback failed", it) }
     }

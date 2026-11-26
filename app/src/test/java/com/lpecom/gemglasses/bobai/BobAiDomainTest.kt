@@ -80,7 +80,7 @@ class ProcedureEngineTest {
 }
 
 class KnowledgeRepositoryTest {
-    private val repo = KnowledgeRepository(MockContent.documents, { MockContent.initialPacks(NOW) }, { NOW })
+    private val repo = KnowledgeRepository({ MockContent.documents }, { MockContent.initialPacks(NOW) }, { NOW })
 
     @Test fun `answer cites the approved revision with page number`() {
         val a = repo.answer("What is the igniter resistance range?", confirmed("ABC-123")) as EvidenceAnswer.Answer
@@ -121,13 +121,13 @@ class KnowledgeRepositoryTest {
     }
 
     @Test fun `documents in a missing pack are unavailable`() {
-        val noPacks = KnowledgeRepository(MockContent.documents, { emptyList() }, { NOW })
+        val noPacks = KnowledgeRepository({ MockContent.documents }, { emptyList() }, { NOW })
         assertTrue(noPacks.answer("igniter resistance", confirmed("ABC-123")) is EvidenceAnswer.NoApplicableDocuments)
     }
 }
 
 class EquipmentResolverTest {
-    private val resolver = EquipmentResolver(MockContent.knownModels)
+    private val resolver = EquipmentResolver { MockContent.knownModels }
 
     @Test fun `extracts single candidate and serial from label`() {
         val c = resolver.candidatesFromLabel(MockContent.MOCK_LABEL_TEXT)

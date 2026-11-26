@@ -122,7 +122,16 @@ data class Job(
     val createdAt: Long,
     val updatedAt: Long,
     val isMock: Boolean = false,
+    val title: String = "",
+    val description: String = "",
+    val dueAt: String? = null,
+    /** Backend job id for jobs assigned from the office; null for local jobs. */
+    val officeId: String? = null,
+    val tasks: List<JobTask> = emptyList(),
 )
+
+@Serializable
+data class JobTask(val id: String, val title: String, val done: Boolean)
 
 @Serializable
 enum class SessionStatus { ACTIVE, PAUSED, ENDED }

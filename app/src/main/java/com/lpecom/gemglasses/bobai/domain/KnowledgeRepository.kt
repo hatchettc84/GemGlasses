@@ -28,14 +28,14 @@ sealed interface EvidenceAnswer {
  * it is only ever quoted, never interpreted as instructions.
  */
 class KnowledgeRepository(
-    private val documents: List<SourceDocument>,
+    private val documents: () -> List<SourceDocument>,
     private val packs: () -> List<KnowledgePack>,
     private val now: () -> Long,
 ) {
 
-    fun allDocuments(): List<SourceDocument> = documents
+    fun allDocuments(): List<SourceDocument> = documents()
 
-    fun document(id: String): SourceDocument? = documents.firstOrNull { it.id == id }
+    fun document(id: String): SourceDocument? = documents().firstOrNull { it.id == id }
 
     /** Whether the document's pack is downloaded, verified and in date. */
     fun availability(doc: SourceDocument): DocAvailability {
@@ -52,7 +52,7 @@ class KnowledgeRepository(
     fun applicableDocuments(equipment: Equipment): List<SourceDocument> {
         if (!equipment.isConfirmed) return emptyList()
         val model = equipment.model.trim().uppercase()
-        return documents.filter { doc ->
+        return documents().filter { doc ->
             doc.tenantId == equipment.tenantId &&
                 doc.approvalStatus == ApprovalStatus.APPROVED &&
                 model in doc.applicableModels.map { it.uppercase() } &&

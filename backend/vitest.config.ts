@@ -11,6 +11,7 @@ export default defineWorkersConfig(async () => {
           singleWorker: true,
           wrangler: { configPath: "./wrangler.toml" },
           miniflare: {
+            r2Buckets: ["DOCUMENTS"],
             bindings: {
               TEST_MIGRATIONS: migrations,
               ENVIRONMENT: "dev",

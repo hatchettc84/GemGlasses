@@ -75,3 +75,36 @@ export function auditStmtIfExists(
     )
     .bind(...auditValues(actor, action, entity, entityId, before, after), ...existsParams);
 }
+
+/**
+ * Optimistic-concurrency write. The audit row goes first, guarded by the same
+ * `where` as the UPDATE; D1 runs the batch as one serialized transaction, so
+ * nothing can run between them: the audit row exists iff the UPDATE applies.
+ * The outcome is read from the UPDATE's own RETURNING rows (never changes()).
+ * Callers put the revision/version check in `where`. Returns true if applied.
+ */
+export async function guardedUpdate(
+  db: D1Database,
+  table: "jobs" | "tasks" | "documents",
+  set: string,
+  setParams: unknown[],
+  where: string,
+  whereParams: unknown[],
+  audit: { actor: Actor; action: string; entity: string; entityId: string; before: unknown; after: unknown },
+): Promise<boolean> {
+  const [, update] = await db.batch([
+    auditStmtIfExists(
+      db,
+      `SELECT 1 FROM ${table} WHERE ${where}`,
+      whereParams,
+      audit.actor,
+      audit.action,
+      audit.entity,
+      audit.entityId,
+      audit.before,
+      audit.after,
+    ),
+    db.prepare(`UPDATE ${table} SET ${set} WHERE ${where} RETURNING id`).bind(...setParams, ...whereParams),
+  ]);
+  return update.results.length > 0;
+}

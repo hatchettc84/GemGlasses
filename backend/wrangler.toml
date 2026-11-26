@@ -11,6 +11,10 @@ database_name = "bobai"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
+[[r2_buckets]]
+binding = "DOCUMENTS"
+bucket_name = "bobai-documents"
+
 # Secrets (set with `wrangler secret put <NAME>`), never committed:
 #   GEMINI_API_KEY        Google AI Studio API key
 #   TOKEN_APP_SECRET      legacy shared secret the Android app sends in X-App-Secret

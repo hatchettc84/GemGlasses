@@ -14,6 +14,8 @@ import { adminAuth } from "./auth/admin";
 import { csrfGuard } from "./auth/csrf";
 import { adminUsers } from "./routes/admin-users";
 import { adminDevices } from "./routes/admin-devices";
+import { operations } from "./routes/operations";
+import { documents } from "./routes/documents";
 import { deviceApi } from "./routes/device";
 import { legacyAuth, mintToken, searchPlaces } from "./legacy";
 
@@ -28,6 +30,8 @@ app.post("/places", legacyAuth, (c) => searchPlaces(c.req.raw, c.env));
 app.use("/api/admin/*", csrfGuard, adminAuth);
 app.route("/api/admin", adminUsers);
 app.route("/api/admin", adminDevices);
+app.route("/api/admin", operations);
+app.route("/api/admin", documents);
 app.route("/api/device", deviceApi);
 
 export default app;

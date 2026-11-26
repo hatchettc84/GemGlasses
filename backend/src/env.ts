@@ -1,5 +1,7 @@
 export interface Env {
   DB: D1Database;
+  /** Uploaded manuals (R2). */
+  DOCUMENTS: R2Bucket;
   /** Google AI Studio API key (secret). */
   GEMINI_API_KEY: string;
   /** Legacy shared secret the app sends in X-App-Secret (secret). */

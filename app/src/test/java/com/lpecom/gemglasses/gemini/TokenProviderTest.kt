@@ -21,7 +21,9 @@ class TokenProviderTest {
     @After fun tearDown() = server.shutdown()
 
     private fun provider(store: InMemoryDeviceKeyStore) =
-        TokenProvider(OkHttpClient(), Json { ignoreUnknownKeys = true }, store, server.url("/").toString(), "app-secret")
+        Json { ignoreUnknownKeys = true }.let { j ->
+            TokenProvider(OkHttpClient(), j, BackendAuth(store, j, "app-secret"), server.url("/").toString())
+        }
 
     @Test fun `a paired phone sends its device key, not the app secret`() = runBlocking {
         server.enqueue(MockResponse().setBody("""{"token":"t1"}"""))

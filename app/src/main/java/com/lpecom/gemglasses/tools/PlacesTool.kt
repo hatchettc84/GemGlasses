@@ -1,6 +1,9 @@
 package com.lpecom.gemglasses.tools
 
 import com.lpecom.gemglasses.BuildConfig
+import com.lpecom.gemglasses.gemini.BackendAuth
+import com.lpecom.gemglasses.gemini.DeviceRemovedException
+import com.lpecom.gemglasses.location.LatLng
 import com.lpecom.gemglasses.location.LocationProvider
 import com.lpecom.gemglasses.gemini.protocol.FunctionDeclaration
 import com.lpecom.gemglasses.state.CitedPlace
@@ -27,12 +30,22 @@ import javax.inject.Inject
  * the result into a short spoken summary (returned to the model) and the list
  * of cited places (pushed to the transcript for the ToS-required source UI).
  */
-class PlacesTool @Inject constructor(
+class PlacesTool internal constructor(
     private val client: OkHttpClient,
     private val json: Json,
-    private val location: LocationProvider,
+    private val locate: suspend () -> LatLng?,
     private val conversation: ConversationStore,
+    private val auth: BackendAuth,
+    private val baseUrl: String,
 ) : AgentTool {
+
+    @Inject constructor(
+        client: OkHttpClient,
+        json: Json,
+        location: LocationProvider,
+        conversation: ConversationStore,
+        auth: BackendAuth,
+    ) : this(client, json, { location.current() }, conversation, auth, BuildConfig.BACKEND_URL)
 
     override val name = "buscar_lugares"
 
@@ -59,7 +72,7 @@ class PlacesTool @Inject constructor(
 
     override suspend fun execute(args: JsonObject): JsonObject = withContext(Dispatchers.IO) {
         val consulta = args.requireString("consulta")
-        val loc = location.current()
+        val loc = locate()
 
         val payload = buildJsonObject {
             put("query", consulta)
@@ -69,19 +82,22 @@ class PlacesTool @Inject constructor(
             }
         }
 
-        val request = Request.Builder()
-            .url("${BuildConfig.BACKEND_URL.trimEnd('/')}/places")
-            .header("X-App-Secret", BuildConfig.APP_SECRET)
+        val builder = Request.Builder()
+            .url("${baseUrl.trimEnd('/')}/places")
             .post(json.encodeToString(JsonObject.serializer(), payload).toRequestBody(JSON_MEDIA))
-            .build()
+        // Throws DeviceRemovedException for a removed phone: never falls back to the app secret.
+        val sent = auth.authorize(builder)
+        val request = builder.build()
 
         runCatching {
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
+                auth.checkResponse(sent, response.code, body)
                 check(response.isSuccessful) { "places endpoint ${response.code}" }
                 parseAndPublish(body)
             }
         }.getOrElse {
+            if (it is DeviceRemovedException) throw it
             buildJsonObject {
                 put("status", "error")
                 put("resumo", "Não consegui buscar lugares agora.")

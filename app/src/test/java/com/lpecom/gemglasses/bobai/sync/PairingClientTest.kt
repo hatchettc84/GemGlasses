@@ -17,7 +17,7 @@ class InMemoryDeviceKeyStore(var stored: DevicePairing? = null) : DeviceKeyStore
     var removed = false
     override fun save(pairing: DevicePairing) { stored = pairing; removed = false }
     override fun clear() { stored = null; removed = false }
-    override fun markRemoved() { stored = null; removed = true }
+    override fun markRemoved(deviceId: String) { if (stored?.deviceId == deviceId) { stored = null; removed = true } }
     override fun wasRemoved() = removed
 }
 

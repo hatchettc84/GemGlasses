@@ -40,6 +40,7 @@ class KeystoreDeviceKeyStore @Inject constructor(
         }.getOrNull()
     }
 
+    @Synchronized
     override fun save(pairing: DevicePairing) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
@@ -50,11 +51,15 @@ class KeystoreDeviceKeyStore @Inject constructor(
             .commit()
     }
 
+    @Synchronized
     override fun clear() {
         prefs.edit().remove(KEY_BLOB).remove(KEY_REMOVED).commit()
     }
 
-    override fun markRemoved() {
+    @Synchronized
+    override fun markRemoved(deviceId: String) {
+        // Only the pairing that got the 401 is removed; a fresh re-pair (or none) is left alone.
+        if (get()?.deviceId != deviceId) return
         prefs.edit().remove(KEY_BLOB).putBoolean(KEY_REMOVED, true).commit()
     }
 

@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
  *   waiting for the next reply.
  * - [fallbackMs] after the tool call with no completed goodbye turn: end anyway, but let any
  *   goodbye audio already queued finish playing first (plus [graceMs]).
+ * - Waiting for the speaker to drain never takes longer than [maxDrainMs], in case a route
+ *   reports its playback position badly.
  *
  * Calls come from the Live event collector and from stop() on any thread; all state is guarded
  * by one lock, and a generation number makes sure a cancelled or replaced timer never ends a
@@ -24,6 +26,7 @@ class EndAfterReply(
     private val pendingPlaybackMs: () -> Long,
     private val graceMs: Long = GRACE_MS,
     private val fallbackMs: Long = FALLBACK_MS,
+    private val maxDrainMs: Long = MAX_DRAIN_MS,
     private val end: () -> Unit,
 ) {
     private val lock = Any()
@@ -79,10 +82,13 @@ class EndAfterReply(
             delay(afterMs)
             val drain = drainFirst ?: synchronized(lock) { generation == gen && sawAudio }
             if (drain) {
-                while (true) {
+                var waited = 0L
+                while (waited < maxDrainMs) {
                     val left = pendingPlaybackMs()
                     if (left <= 0) break
-                    delay(left)
+                    val step = minOf(left, maxDrainMs - waited)
+                    delay(step)
+                    waited += step
                 }
                 delay(graceMs)
             }
@@ -104,5 +110,6 @@ class EndAfterReply(
     companion object {
         const val GRACE_MS = 1_500L
         const val FALLBACK_MS = 10_000L
+        const val MAX_DRAIN_MS = 15_000L
     }
 }

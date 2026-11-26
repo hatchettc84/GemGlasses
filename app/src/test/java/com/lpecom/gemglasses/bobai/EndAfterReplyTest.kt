@@ -89,6 +89,18 @@ class EndAfterReplyTest {
         assertEquals(1, ended[0])
     }
 
+    @Test fun `a speaker that never drains holds the session for 15 s at most`() = runTest {
+        var ended = 0
+        val e = EndAfterReply(backgroundScope, { 5_000L }, graceMs = 1_500, fallbackMs = 10_000, maxDrainMs = 15_000) { ended++ }
+        e.request()
+        e.onAudio()
+        e.onTurnComplete()
+        advanceTimeBy(16_400); runCurrent()
+        assertEquals(0, ended)
+        advanceTimeBy(200); runCurrent()
+        assertEquals(1, ended)
+    }
+
     @Test fun `a completed turn or audio without a request does nothing, and reset cancels`() = runTest {
         val (e, p, ended) = rig()
         goodbye(e, p, 1_000)

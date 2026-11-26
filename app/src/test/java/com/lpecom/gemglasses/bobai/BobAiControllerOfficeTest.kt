@@ -114,4 +114,38 @@ class BobAiControllerOfficeTest {
         val answer = c.knowledge.answer("how do I open the panel", c.activeSession()!!.equipment)
         assertTrue(answer is EvidenceAnswer.Answer)
     }
+
+    @Test fun `a manual left out of the next knowledge is no longer cited`() {
+        val c = controller()
+        val base = knowledge()
+        val breaker = base.documents.single().copy(
+            id = "doc-zx9-b", title = "ZX-9 Electrical", family = "ZX-9 Electrical",
+            pages = listOf(DocPage(2, "Breaker", "Reset the breaker after replacing the fuse.")),
+        )
+        c.applyOfficeKnowledge(base.copy(documents = base.documents + breaker))
+        c.startOrResume()
+        c.confirmEquipment("ZX-9", "SN1")
+        val eq = c.activeSession()!!.equipment
+        assertEquals("doc-zx9", (c.knowledge.answer("how do I open the panel", eq) as EvidenceAnswer.Answer).citations.single().documentId)
+
+        c.applyOfficeKnowledge(base.copy(documents = listOf(breaker)))
+        assertEquals(EvidenceAnswer.NoEvidence, c.knowledge.answer("how do I open the panel", eq))
+        assertNull(c.knowledge.document("doc-zx9"))
+        assertEquals(listOf("doc-zx9-b"), c.state.value.packs.single { it.id == "office-approved" }.documentIds)
+        assertTrue(c.knowledge.answer("how do I reset the breaker", eq) is EvidenceAnswer.Answer)
+    }
+
+    @Test fun `clearOffice forgets office manuals, models and jobs but keeps a job with a live session`() {
+        val c = controller()
+        c.applyOfficeKnowledge(knowledge())
+        c.applyOfficeWork(work("a", "b"))
+        c.startOrResume("office-b")
+        c.clearOffice()
+        assertFalse(c.resolver.isKnownModel("ZX-9"))
+        assertTrue(c.knowledge.allDocuments().none { it.id == "doc-zx9" })
+        assertTrue(c.state.value.packs.none { it.id == "office-approved" })
+        assertNull(c.job("office-a"))
+        assertTrue(c.job("office-b") != null)
+        assertTrue(c.job("job-mock-sample") != null)
+    }
 }

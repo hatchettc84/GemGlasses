@@ -2,6 +2,7 @@ package com.lpecom.gemglasses.bobai
 
 import com.lpecom.gemglasses.bobai.office.HttpOfficeApi
 import com.lpecom.gemglasses.bobai.office.NotPairedException
+import com.lpecom.gemglasses.bobai.office.OfficeNotFoundException
 import com.lpecom.gemglasses.bobai.sync.DevicePairing
 import com.lpecom.gemglasses.bobai.sync.InMemoryDeviceKeyStore
 import com.lpecom.gemglasses.gemini.BackendAuth
@@ -41,5 +42,19 @@ class HttpOfficeApiTest {
         val req = server.takeRequest()
         assertEquals("Bearer dev-key", req.getHeader("Authorization"))
         assertNull(req.getHeader("X-App-Secret"))
+    }
+
+    @Test fun `one document is read from knowledge by id and a 404 is reported as not found`() = runBlocking {
+        val store = InMemoryDeviceKeyStore(DevicePairing("D1", "dev-key", "Tia"))
+        server.enqueue(
+            MockResponse().setBody(
+                """{"version":2,"sha256":"abc","document":{"id":"D 1","tenantId":"t","title":"T","family":"T","revision":"1","applicableModels":["ZX-9"],"approvalStatus":"APPROVED","packId":"office-approved","isMock":false,"pages":[]}}""",
+            ),
+        )
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not_found","message":"Approved document not found."}"""))
+        assertEquals("2:abc", api(store).knowledgeDocument("D 1").cacheKey)
+        assertEquals("/api/device/knowledge/D+1", server.takeRequest().path)
+        val e = runCatching { api(store).knowledgeDocument("gone") }.exceptionOrNull()
+        assertTrue(e is OfficeNotFoundException)
     }
 }

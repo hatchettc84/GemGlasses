@@ -348,6 +348,24 @@ class BobAiController(
         }
     }
 
+    /**
+     * Forgets everything the office sent (phone removed or unpaired): its manuals, models and pack,
+     * and its jobs, except a job with a live session, which stays until that session ends.
+     */
+    fun clearOffice() {
+        officeDocs = emptyList()
+        officeModels = emptyMap()
+        officeTenant = null
+        officeExpiresAt = 0L
+        mutate { s ->
+            val liveJobIds = s.sessions.filter { it.status != SessionStatus.ENDED }.map { it.jobId }.toSet()
+            s.copy(
+                packs = s.packs.filter { it.id != OFFICE_PACK_ID },
+                jobs = s.jobs.filter { it.officeId == null || it.id in liveJobIds },
+            )
+        }
+    }
+
     /** Replaces the office-assigned jobs with [w]; local jobs and jobs with a live session stay. */
     fun applyOfficeWork(w: OfficeWork) {
         val t = now()

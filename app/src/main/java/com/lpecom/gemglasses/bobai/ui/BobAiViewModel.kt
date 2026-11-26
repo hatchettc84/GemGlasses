@@ -240,8 +240,13 @@ class BobAiViewModel @Inject constructor(
         viewModelScope.launch {
             officeMutex.withLock {
                 val outcome = withContext(Dispatchers.IO) {
-                    if (deviceKeys.wasRemoved()) com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed
-                    else officeSync.syncNow()
+                    if (deviceKeys.wasRemoved()) {
+                        // Removed by the office: keep no office manuals or jobs on this phone.
+                        officeSync.forget()
+                        com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed
+                    } else {
+                        officeSync.syncNow()
+                    }
                 }
                 _officeSynced.value = outcome is com.lpecom.gemglasses.bobai.office.SyncOutcome.Synced
                 _officeStatus.value = when (outcome) {
@@ -293,7 +298,11 @@ class BobAiViewModel @Inject constructor(
     fun unpairPhone() {
         pairingGeneration.incrementAndGet()
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { deviceKeys.clear() }
+            withContext(Dispatchers.IO) {
+                deviceKeys.clear()
+                // An unpaired phone keeps no office manuals or customer jobs.
+                officeMutex.withLock { officeSync.forget() }
+            }
             pairingGeneration.incrementAndGet()
             _pairing.value = PairingUi(message = "This phone is unpaired. Your admin can also remove it in the console.")
         }

@@ -100,6 +100,24 @@ class BobVoiceAssistant @Inject constructor(
     private val pendingNotices = mutableListOf<String>()
     private var sessionReady = false
 
+    /**
+     * [android.os.SystemClock.elapsedRealtime] of the last sign of conversation: technician speech
+     * (transcribed), Bob audio, a barge-in, a tool call or a live-view frame. A wake-word session
+     * with none of these for a while ends by itself (WakeSessionCore).
+     */
+    @Volatile var lastActivityAt: Long = 0L
+        private set
+
+    private fun touch() {
+        lastActivityAt = android.os.SystemClock.elapsedRealtime()
+    }
+
+    /** Bob called end_conversation: stop after its goodbye. */
+    private val endAfterReply = EndAfterReply(scope) {
+        Log.i(TAG, "ending the session: the technician said goodbye")
+        stop()
+    }
+
     private val _state = MutableStateFlow(BobVoiceState())
     val state: StateFlow<BobVoiceState> = _state.asStateFlow()
 
@@ -111,6 +129,8 @@ class BobVoiceAssistant @Inject constructor(
         if (_state.value.active) return
         if (legacyAgent.running) legacyAgent.stop()
         micPaused = false
+        endAfterReply.reset()
+        touch()
         synchronized(pendingNotices) {
             pendingNotices.clear()
             sessionReady = false
@@ -149,6 +169,7 @@ class BobVoiceAssistant @Inject constructor(
         if (!_state.value.active) return
         // First, so a live view ending during shutdown doesn't re-route audio.
         glassesAudioWanted = false
+        endAfterReply.reset()
         sessionKeeper.stop()
         scope.coroutineContext.cancelChildren()
         liveViewJob = null
@@ -220,6 +241,7 @@ class BobVoiceAssistant @Inject constructor(
                 while (isActive) {
                     sampler.nextForUpload(System.currentTimeMillis())?.let { frame ->
                         sessionKeeper.sendFrame(frame.jpeg)
+                        touch()
                         _state.update { it.copy(framesSent = it.framesSent + 1) }
                     }
                     delay(TICK_MS)
@@ -272,15 +294,28 @@ class BobVoiceAssistant @Inject constructor(
                     queued.forEach(sessionKeeper::sendText)
                 }
                 is SessionEvent.AudioChunk -> {
+                    touch()
                     if (!micPaused) speaker.write(event.pcm)
                     _state.update { if (it.status == VoiceStatus.LISTENING) it.copy(status = VoiceStatus.SPEAKING) else it }
                 }
-                SessionEvent.Interrupted -> speaker.flush()
-                SessionEvent.TurnComplete -> _state.update {
-                    if (it.status == VoiceStatus.SPEAKING) it.copy(status = VoiceStatus.LISTENING) else it
+                SessionEvent.Interrupted -> {
+                    touch()
+                    speaker.flush()
                 }
-                is SessionEvent.Transcript -> appendTranscript(event.fromUser, event.text)
-                is SessionEvent.ToolInvocation -> answerTools(event.calls)
+                SessionEvent.TurnComplete -> {
+                    _state.update {
+                        if (it.status == VoiceStatus.SPEAKING) it.copy(status = VoiceStatus.LISTENING) else it
+                    }
+                    endAfterReply.onTurnComplete()
+                }
+                is SessionEvent.Transcript -> {
+                    touch()
+                    appendTranscript(event.fromUser, event.text)
+                }
+                is SessionEvent.ToolInvocation -> {
+                    touch()
+                    answerTools(event.calls)
+                }
                 is SessionEvent.ToolCancelled -> Log.i(TAG, "tool calls cancelled: ${event.ids}")
                 is SessionEvent.GoingAway -> {
                     synchronized(pendingNotices) { sessionReady = false }
@@ -324,6 +359,11 @@ class BobVoiceAssistant @Inject constructor(
                     // camera chip and frame count show on screen while it runs.
                     BobLiveTools.START_LIVE_VIEW -> BobLiveTools.liveViewJson(startLiveView())
                     BobLiveTools.STOP_LIVE_VIEW -> BobLiveTools.liveViewJson(stopLiveView())
+                    // The technician said goodbye: the session closes after Bob's reply.
+                    BobLiveTools.END_CONVERSATION -> {
+                        endAfterReply.request()
+                        BobLiveTools.endConversationJson()
+                    }
                     else -> BobLiveTools.unknownTool(call.name)
                 }
             }.getOrElse { e ->

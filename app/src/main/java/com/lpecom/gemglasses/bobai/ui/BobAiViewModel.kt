@@ -23,9 +23,6 @@ import com.lpecom.gemglasses.bobai.live.MediaStatus
 import com.lpecom.gemglasses.bobai.live.ModeAvailability
 import com.lpecom.gemglasses.bobai.workmode.WorkModeController
 import com.lpecom.gemglasses.bobai.workmode.WorkModeState
-import com.lpecom.gemglasses.bobai.workmode.WorkPhase
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import com.lpecom.gemglasses.glasses.GlassesCameraSource
 import com.lpecom.gemglasses.glasses.GlassesManager
 import com.lpecom.gemglasses.glasses.RegistrationState
@@ -70,6 +67,8 @@ class BobAiViewModel @Inject constructor(
     private val pairingClient: com.lpecom.gemglasses.bobai.sync.PairingClient,
     private val deviceKeys: com.lpecom.gemglasses.bobai.sync.DeviceKeyStore,
     private val officeSync: com.lpecom.gemglasses.bobai.office.OfficeSync,
+    // Process-scoped "Hey Bob" → voice → re-arm hand-off; injected so it exists once Work Mode can be on.
+    @Suppress("unused") private val wakeSession: com.lpecom.gemglasses.bobai.workmode.WakeSessionCoordinator,
 ) : AndroidViewModel(application) {
 
     /** Loads the on-device model (pushed with adb for the spike) and runs its self-test. */
@@ -333,39 +332,6 @@ class BobAiViewModel @Inject constructor(
     val workModeState: StateFlow<WorkModeState> = workMode.state
 
     /**
-     * "Hey Bob" was heard. The detector has already been stopped and
-     * destroyed (WakeHandoff does that, on the main thread, before
-     * WAKE_DETECTED is published), so the microphone is free; the short
-     * settle gives the recognizer service time to close its audio input
-     * before Gemini Live opens the mic.
-     */
-    @android.annotation.SuppressLint("MissingPermission") // checked just below
-    private fun onWakeWord() {
-        workMode.acknowledge()
-        // Work Mode never arms while voice is on, but if a session is somehow
-        // already running, just carry on with it: no second start, no notice.
-        if (voice.state.value.active) return
-        controller.startOrResume()
-        if (!workMode.hasMicPermission()) {
-            workMode.endAssistance()
-            return
-        }
-        viewModelScope.launch {
-            delay(MIC_HANDOFF_SETTLE_MS)
-            if (!workMode.state.value.isActive || voice.state.value.active) return@launch
-            val started = runCatching { voice.start() }
-            if (started.isFailure) {
-                Log.w(TAG, "voice did not start after the wake word: ${started.exceptionOrNull()?.javaClass?.simpleName}")
-                runCatching { voice.stop() }
-                // Back to listening for "Hey Bob".
-                workMode.endAssistance()
-                return@launch
-            }
-            voice.sendAppNotice("The technician just said \"Hey Bob\". Greet them in a few words and ask how you can help.")
-        }
-    }
-
-    /**
      * Talk to Bob from the button. If Work Mode is listening, it is paused
      * first (as a manual start) so the detector lets go of the microphone; it
      * re-arms when voice is turned off.
@@ -447,24 +413,6 @@ class BobAiViewModel @Inject constructor(
     }
 
     init {
-        viewModelScope.launch {
-            workMode.state.map { it.phase }.distinctUntilChanged().collect { phase ->
-                if (phase == WorkPhase.WAKE_DETECTED) onWakeWord()
-            }
-        }
-        viewModelScope.launch {
-            // Re-arm "Hey Bob" only after the voice session is fully off, so
-            // Bob's own voice can never wake the detector.
-            var wasActive = voice.state.value.active
-            voice.state.collect { v ->
-                val ended = wasActive && !v.active
-                wasActive = v.active
-                if (ended && workMode.state.value.isActive) {
-                    delay(MIC_HANDOFF_SETTLE_MS)
-                    if (!voice.state.value.active && workMode.state.value.isActive) workMode.endAssistance()
-                }
-            }
-        }
         refreshPairing()
         viewModelScope.launch {
             val paired = withContext(Dispatchers.IO) {
@@ -497,7 +445,7 @@ class BobAiViewModel @Inject constructor(
     private companion object {
         const val CAPTURE_DIR = "captures"
         /** Time for one microphone client to close its input before the other opens. */
-        const val MIC_HANDOFF_SETTLE_MS = 300L
+        const val MIC_HANDOFF_SETTLE_MS = com.lpecom.gemglasses.bobai.workmode.WakeSessionCore.MIC_HANDOFF_SETTLE_MS
         const val CAPTURE_ATTEMPTS = 2
         const val RECONNECT_SETTLE_MS = 1_500L
         const val RECONNECT_TIMEOUT_MS = 8_000L

@@ -87,6 +87,15 @@ class WorkModeCore(
         if (_state.value.phase == WorkPhase.IDLE_TIMEOUT) arm()
     }
 
+    /**
+     * A wake-word session ended for inactivity; call once voice is off. Goes
+     * through IDLE_TIMEOUT and re-arms "Hey Bob", like [endAssistance].
+     */
+    fun idleTimeout() {
+        dispatch(WorkEvent.IdleTimeout)
+        if (_state.value.phase == WorkPhase.IDLE_TIMEOUT) arm()
+    }
+
     /** Re-check permission and route when the app returns to the foreground. */
     fun recheck() {
         val s = _state.value

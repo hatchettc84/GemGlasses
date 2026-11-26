@@ -27,13 +27,27 @@ class BobLiveToolsTest {
 
     private fun JsonObject.str(key: String) = getValue(key).jsonPrimitive.content
 
-    @Test fun `declares exactly the read-only tools plus camera on and off`() {
-        // No tool may change the procedure; the only side effect is the camera.
+    @Test fun `declares exactly the read-only tools plus camera on and off and end conversation`() {
+        // No tool may change the procedure; the only side effects are the camera and ending the session.
         val names = BobLiveTools.declarations.flatMap { it.functionDeclarations.orEmpty() }.map { it.name }
         assertEquals(
-            listOf(BobLiveTools.SEARCH, BobLiveTools.CURRENT_STEP, BobLiveTools.START_LIVE_VIEW, BobLiveTools.LIST_JOBS, BobLiveTools.STOP_LIVE_VIEW),
+            listOf(
+                BobLiveTools.SEARCH, BobLiveTools.CURRENT_STEP, BobLiveTools.START_LIVE_VIEW, BobLiveTools.LIST_JOBS,
+                BobLiveTools.STOP_LIVE_VIEW, BobLiveTools.END_CONVERSATION,
+            ),
             names,
         )
+    }
+
+    @Test fun `bob ends the conversation when the technician says goodbye, and only then`() {
+        assertEquals("end_conversation", BobLiveTools.END_CONVERSATION)
+        val s = BobLiveTools.systemInstruction(null)
+        assertTrue(s.contains("says goodbye"))
+        assertTrue(s.contains("call ${BobLiveTools.END_CONVERSATION}"))
+        assertTrue(s.contains("Do not call it at any other time"))
+        val decl = BobLiveTools.declarations.flatMap { it.functionDeclarations.orEmpty() }.single { it.name == BobLiveTools.END_CONVERSATION }
+        assertTrue(decl.description.contains("goodbye"))
+        assertEquals("ending", BobLiveTools.endConversationJson().str("status"))
     }
 
     @Test fun `system instruction carries the safety rules`() {

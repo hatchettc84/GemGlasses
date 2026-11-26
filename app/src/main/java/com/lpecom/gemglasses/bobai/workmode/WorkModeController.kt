@@ -26,7 +26,7 @@ import javax.inject.Singleton
  * Microphone hand-off: the detector and the Gemini Live session never hold
  * the microphone together. On a wake, [WakeHandoff] stops the engine
  * synchronously (on the main thread) before WakeDetected is dispatched, and
- * the voice session is started by whoever observes that state. A manual
+ * [WakeSessionCoordinator] (process-scoped) starts the voice session. A manual
  * start stops the engine the same way. The engine is only started again by
  * [endAssistance], and [WorkModeCore] refuses to start it while voice is on.
  * The decisions live in [WorkModeCore] so they are JVM tested.
@@ -76,6 +76,9 @@ class WorkModeController @Inject constructor(
 
     /** Call only once the voice session is off, so Bob's own voice can't wake the detector. */
     fun endAssistance() = core.endAssistance()
+
+    /** A wake-word session ended for inactivity (voice already off): re-arm. */
+    fun idleTimeout() = core.idleTimeout()
 
     /** Re-check permission and route when the app returns to the foreground. */
     fun recheck() = core.recheck()

@@ -43,6 +43,9 @@ class WakeListenService : Service() {
 
     @Inject lateinit var workMode: WorkModeController
 
+    /** Injected so the wake → voice hand-off exists while this service keeps the process alive. */
+    @Inject lateinit var wakeSession: WakeSessionCoordinator
+
     private var wakeLock: PowerManager.WakeLock? = null
     private var text = listenNotificationText(WorkPhase.ARMED)
     private var scope: CoroutineScope? = null

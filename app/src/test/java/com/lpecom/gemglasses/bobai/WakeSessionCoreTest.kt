@@ -64,13 +64,16 @@ class WakeSessionCoreTest {
         var stops = 0
         var greets = 0
         var failStart = false
+
+        /** stop() does nothing (e.g. the session is already shutting down another way). */
+        var ignoreStop = false
         override fun lastActivityAt() = lastActivity
         override fun prepare() = Unit
         override fun start() {
             if (failStart) throw IllegalStateException("no token")
             starts++; activeState.value = true
         }
-        override fun stop() { stops++; activeState.value = false }
+        override fun stop() { stops++; if (!ignoreStop) activeState.value = false }
         override fun greet() { greets++ }
         fun speech() { lastActivity = clock() }
     }
@@ -94,6 +97,7 @@ class WakeSessionCoreTest {
             clock = { scope.testScheduler.currentTime },
             settleMs = 300,
             idleMs = 45_000,
+            maxMs = 600_000,
         )
         val phase get() = core.state.value.phase
     }
@@ -199,5 +203,48 @@ class WakeSessionCoreTest {
         advanceTimeBy(1_000); runCurrent()
         assertEquals(0, r.voice.starts)
         assertFalse(r.core.state.value.isActive)
+    }
+
+    @Test fun `a busy wake session still ends at the 10 minute maximum and re-arms via IdleTimeout`() = runTest {
+        val r = armed()
+        wake(r)
+        // Someone talks every 30 s (last at 9:30), so the idle timer never fires.
+        repeat(19) {
+            advanceTimeBy(30_000); runCurrent()
+            assertTrue(r.voice.active)
+            r.voice.speech()
+        }
+        advanceTimeBy(29_500); runCurrent() // 9:59.5 since voice started
+        assertTrue("still on just before 10 min", r.voice.active)
+        advanceTimeBy(600); runCurrent()
+        assertFalse("voice stopped at 10 min despite activity", r.voice.active)
+        assertEquals(1, r.voice.stops)
+        advanceTimeBy(301); runCurrent()
+        assertTrue(r.events.any { it.startsWith("IdleTimeout") && it.endsWith("IDLE_TIMEOUT") })
+        assertTrue(r.core.state.value.heyBobArmed)
+        assertTrue(r.engine.running)
+    }
+
+    @Test fun `the 10 minute maximum is a wake session constant next to the idle timeout`() {
+        assertEquals(600_000L, WakeSessionCore.WAKE_SESSION_MAX_MS)
+        assertEquals(45_000L, WakeSessionCore.IDLE_TIMEOUT_MS)
+    }
+
+    @Test fun `an idle stop that does nothing does not label the next session end as idle`() = runTest {
+        val r = armed()
+        wake(r)
+        r.voice.ignoreStop = true
+        advanceTimeBy(45_100); runCurrent()
+        assertEquals("the idle stop was attempted", 1, r.voice.stops)
+        assertTrue("but voice is still on", r.voice.active)
+        // Later the technician (or Bob) ends the session normally.
+        r.voice.ignoreStop = false
+        advanceTimeBy(5_000)
+        r.voice.stop()
+        runCurrent()
+        advanceTimeBy(301); runCurrent()
+        assertTrue(r.events.none { it.startsWith("IdleTimeout") })
+        assertTrue(r.events.any { it.startsWith("SessionEnded") })
+        assertTrue(r.core.state.value.heyBobArmed)
     }
 }

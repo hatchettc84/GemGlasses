@@ -49,8 +49,9 @@ interface WakeVoice {
  *   can't start, go back to listening.
  * - A wake-word session ends by itself after [idleMs] with no user speech, no
  *   Bob audio and no live view ([WorkEvent.IdleTimeout]); nothing more is
- *   uploaded, and "Hey Bob" re-arms. Sessions started from the button keep
- *   running until stopped.
+ *   uploaded, and "Hey Bob" re-arms. It also ends, the same way, [maxMs] after it
+ *   started however busy it is. Sessions started from the button keep running
+ *   until stopped.
  * - When voice turns off while Work Mode is ACTIVE, wait [settleMs] (so Bob's
  *   own voice can't wake the detector) and re-arm.
  */
@@ -61,6 +62,7 @@ class WakeSessionCore(
     private val clock: () -> Long,
     private val settleMs: Long = MIC_HANDOFF_SETTLE_MS,
     private val idleMs: Long = IDLE_TIMEOUT_MS,
+    private val maxMs: Long = WAKE_SESSION_MAX_MS,
     private val log: (String) -> Unit = {},
 ) {
     private var idleJob: Job? = null
@@ -120,16 +122,29 @@ class WakeSessionCore(
         idleJob?.cancel()
         val startedAt = clock()
         idleJob = scope.launch {
+            var reachedMax = false
             while (true) {
+                val now = clock()
                 val last = maxOf(startedAt, voice.lastActivityAt())
-                val left = idleMs - (clock() - last)
-                if (left <= 0) break
-                delay(left)
+                val idleLeft = idleMs - (now - last)
+                val maxLeft = maxMs - (now - startedAt)
+                if (maxLeft <= 0) { reachedMax = true; break }
+                if (idleLeft <= 0) break
+                delay(minOf(idleLeft, maxLeft))
                 if (!isWakeSession()) return@launch
             }
-            log("no speech for ${idleMs / 1000} s: ending the wake-word session")
+            // Ended another way meanwhile: that end is not an idle one.
+            if (!isWakeSession()) return@launch
+            if (reachedMax) log("wake-word session reached its ${maxMs / 60_000} min maximum: ending it")
+            else log("no speech for ${idleMs / 1000} s: ending the wake-word session")
             endingForIdle = true
-            voice.stop()
+            runCatching { voice.stop() }
+                .onFailure { log("voice stop failed: ${it.javaClass.simpleName}") }
+            if (voice.active) {
+                // stop() was a no-op: whatever ends this session later is not an idle end.
+                endingForIdle = false
+                log("voice stop did nothing; the session end will not count as idle")
+            }
         }
     }
 
@@ -150,5 +165,8 @@ class WakeSessionCore(
 
         /** A wake-word session with no speech either way for this long ends by itself. */
         const val IDLE_TIMEOUT_MS = 45_000L
+
+        /** A wake-word session ends this long after it started, however busy (then as on idle). */
+        const val WAKE_SESSION_MAX_MS = 600_000L
     }
 }

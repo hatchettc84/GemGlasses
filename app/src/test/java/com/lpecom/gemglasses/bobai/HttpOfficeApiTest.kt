@@ -53,8 +53,20 @@ class HttpOfficeApiTest {
         )
         server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not_found","message":"Approved document not found."}"""))
         assertEquals("2:abc", api(store).knowledgeDocument("D 1").cacheKey)
-        assertEquals("/api/device/knowledge/D+1", server.takeRequest().path)
+        assertEquals("/api/device/knowledge/D%201", server.takeRequest().path)
         val e = runCatching { api(store).knowledgeDocument("gone") }.exceptionOrNull()
         assertTrue(e is OfficeNotFoundException)
+    }
+
+    @Test fun `a document id is one path segment, so a slash or dots cannot change the route`() = runBlocking {
+        val store = InMemoryDeviceKeyStore(DevicePairing("D1", "dev-key", "Tia"))
+        server.enqueue(MockResponse().setResponseCode(404))
+        runCatching { api(store).knowledgeDocument("a/../jobs") }
+        assertEquals("/api/device/knowledge/a%2F..%2Fjobs", server.takeRequest().path)
+        // A bare "." or ".." would be resolved away by the URL builder; it is never requested.
+        for (id in listOf(".", "..", "")) {
+            assertTrue(runCatching { api(store).knowledgeDocument(id) }.exceptionOrNull() is OfficeNotFoundException)
+        }
+        assertEquals(1, server.requestCount)
     }
 }

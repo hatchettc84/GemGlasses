@@ -7,6 +7,7 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -120,16 +121,24 @@ class HttpOfficeApi internal constructor(
         .pingInterval(0, TimeUnit.MILLISECONDS)
         .build()
 
-    override suspend fun knowledge(): OfficeKnowledgeIndex = get("knowledge", OfficeKnowledgeIndex.serializer())
+    override suspend fun knowledge(): OfficeKnowledgeIndex = get(listOf("knowledge"), OfficeKnowledgeIndex.serializer())
 
-    override suspend fun knowledgeDocument(id: String): OfficeDocumentBody =
-        get("knowledge/" + java.net.URLEncoder.encode(id, "UTF-8"), OfficeDocumentBody.serializer())
+    override suspend fun knowledgeDocument(id: String): OfficeDocumentBody {
+        // The id is one encoded path segment. "." and ".." would be resolved away by the URL
+        // builder (changing the route), so they are never requested.
+        if (id.isEmpty() || id == "." || id == "..") throw OfficeNotFoundException("knowledge/$id")
+        return get(listOf("knowledge", id), OfficeDocumentBody.serializer())
+    }
 
-    override suspend fun work(): OfficeWork = get("jobs", OfficeWork.serializer())
+    override suspend fun work(): OfficeWork = get(listOf("jobs"), OfficeWork.serializer())
 
-    private suspend fun <T> get(path: String, serializer: KSerializer<T>): T =
+    private suspend fun <T> get(segments: List<String>, serializer: KSerializer<T>): T =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val builder = Request.Builder().url(baseUrl.trimEnd('/') + "/api/device/" + path).get()
+            val path = segments.joinToString("/")
+            val url = (baseUrl.trimEnd('/') + "/api/device/").toHttpUrl().newBuilder()
+                .apply { segments.forEach { addPathSegment(it) } }
+                .build()
+            val builder = Request.Builder().url(url).get()
             val sent = auth.authorize(builder)
             if (sent.deviceId == null) throw NotPairedException() // never send a device route with the shared secret
             client.newCall(builder.build()).execute().use { response ->

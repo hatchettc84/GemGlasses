@@ -38,6 +38,7 @@ export interface TaskRow {
 }
 
 const MAX_PAGES = 20;
+const PLANE_TIMEOUT_MS = 8000;
 const MAX_JOBS = 500;
 const MAX_TASKS = 5000;
 const MAX_DESCRIPTION = 2000;
@@ -61,9 +62,13 @@ async function planeGet(cfg: PlaneConfig, path: string): Promise<unknown> {
   const url = `${cfg.baseUrl}/api/v1/workspaces/${encodeURIComponent(cfg.workspaceSlug)}/${path}`;
   let res: Response;
   try {
-    res = await fetch(url, { headers: { "X-API-Key": cfg.apiKey, Accept: "application/json" } });
+    res = await fetch(url, {
+      headers: { "X-API-Key": cfg.apiKey, Accept: "application/json" },
+      // A stalled Plane must surface as plane_unavailable, not hang the phone's sync.
+      signal: AbortSignal.timeout(PLANE_TIMEOUT_MS),
+    });
   } catch {
-    console.error("plane request failed: network error");
+    console.error("plane request failed: network error or timeout");
     throw unavailable();
   }
   if (!res.ok) {

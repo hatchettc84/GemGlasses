@@ -8,6 +8,12 @@ import java.io.File
 
 sealed interface SyncOutcome {
     data object Synced : SyncOutcome
+
+    /**
+     * The sync succeeded, but [notUpdated] listed manuals could not be downloaded (network error,
+     * timeout or server error). Each one kept its cached copy if there was one, or was left out.
+     */
+    data class Partial(val notUpdated: Int) : SyncOutcome
     data object NotPaired : SyncOutcome
     data object Removed : SyncOutcome
     data class Failed(val message: String) : SyncOutcome
@@ -20,7 +26,9 @@ sealed interface SyncOutcome {
  *
  * Manuals sync from a manifest: only new or changed documents are downloaded, unchanged ones are
  * kept from the cache, and a cached document that is no longer in the manifest is dropped. That
- * is how a revocation reaches the phone.
+ * is how a revocation reaches the phone. One document failing to download (anything but a 404)
+ * does not fail the sync: its cached copy is kept, or it is skipped, and the outcome is
+ * [SyncOutcome.Partial]. The manifest's drops always apply.
  *
  * A removed or unpaired phone keeps no office data: [forget] deletes the cache and clears Bob's
  * office manuals and jobs, and [loadCached] never applies a cache without a device key.
@@ -55,13 +63,13 @@ class OfficeSync(
     suspend fun syncNow(): SyncOutcome {
         if (!isPaired()) return SyncOutcome.NotPaired
         return try {
-            val knowledge = fetchKnowledge()
+            val (knowledge, notUpdated) = fetchKnowledge()
             val work = api.work()
             write(knowledgeFile, json.encodeToString(OfficeKnowledge.serializer(), knowledge))
             write(workFile, json.encodeToString(OfficeWork.serializer(), work))
             controller.applyOfficeKnowledge(knowledge)
             controller.applyOfficeWork(work)
-            SyncOutcome.Synced
+            if (notUpdated == 0) SyncOutcome.Synced else SyncOutcome.Partial(notUpdated)
         } catch (e: DeviceRemovedException) {
             forget()
             SyncOutcome.Removed
@@ -74,12 +82,16 @@ class OfficeSync(
         }
     }
 
-    /** Reads the manifest, reuses unchanged cached documents and downloads the rest. */
-    private suspend fun fetchKnowledge(): OfficeKnowledge {
+    /**
+     * Reads the manifest, reuses unchanged cached documents and downloads the rest. Returns the
+     * knowledge and how many listed documents could not be downloaded.
+     */
+    private suspend fun fetchKnowledge(): Pair<OfficeKnowledge, Int> {
         val index = api.knowledge()
         val cached = readCached(knowledgeFile, OfficeKnowledge.serializer())?.takeIf { it.tenantId == index.tenantId }
         val cachedDocs = cached?.documents?.associateBy { it.id }.orEmpty()
         val versions = LinkedHashMap<String, String>()
+        var notUpdated = 0
         val docs = index.documents.mapNotNull { meta ->
             val reuse = cachedDocs[meta.id]?.takeIf { cached?.versions?.get(meta.id) == meta.cacheKey }
             if (reuse != null) {
@@ -90,12 +102,25 @@ class OfficeSync(
                 api.knowledgeDocument(meta.id)
             } catch (e: OfficeNotFoundException) {
                 return@mapNotNull null // revoked since the manifest was read
+            } catch (e: DeviceRemovedException) {
+                throw e
+            } catch (e: NotPairedException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Network error, timeout or server error for this one document: keep the cached copy
+                // (any version; its old cache key, if any, makes the next sync retry it) or skip it.
+                notUpdated++
+                val stale = cachedDocs[meta.id] ?: return@mapNotNull null
+                cached?.versions?.get(meta.id)?.let { versions[meta.id] = it }
+                return@mapNotNull stale
             }
             if (body.document.id != meta.id) return@mapNotNull null
             versions[meta.id] = body.cacheKey
             body.document
         }
-        return OfficeKnowledge(index.tenantId, index.generatedAt, index.expiresAt, docs, versions)
+        return OfficeKnowledge(index.tenantId, index.generatedAt, index.expiresAt, docs, versions) to notUpdated
     }
 
     private fun <T> readCached(file: File, serializer: kotlinx.serialization.KSerializer<T>): T? {

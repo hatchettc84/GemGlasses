@@ -153,6 +153,82 @@ class OfficeSyncTest {
         assertFalse(hasDoc(c, "doc-2"))
     }
 
+    /** Like [FakeApi], but downloading any document in [failing] throws [error]. */
+    private fun failingDocs(api: FakeApi, failing: Set<String>, error: () -> Exception = { IOException("timeout") }) =
+        object : OfficeApi by api {
+            override suspend fun knowledgeDocument(id: String): OfficeDocumentBody {
+                if (id in failing) { api.fetched += id; throw error() }
+                return api.knowledgeDocument(id)
+            }
+        }
+
+    @Test fun `one document failing to download keeps its cached copy and reports a partial sync`() = runBlocking {
+        val api = api(doc1, doc2)
+        val c = controller("a")
+        assertEquals(SyncOutcome.Synced, OfficeSync(api, dir, c) { true }.syncNow())
+
+        // doc-1 has a new version, but its download times out; doc-3 is new and downloads fine.
+        val doc1b = doc1.copy(pages = listOf(DocPage(1, "Panel", "Close the gas valve, then open the panel.")))
+        val doc3 = doc("doc-3", "ZX-9", "Bleed the radiator with the key.", heading = "Heating")
+        api.served = listOf(meta(doc1, sha = "sha-new") to doc1b, meta(doc2) to doc2, meta(doc3) to doc3)
+        val sync = OfficeSync(failingDocs(api, setOf("doc-1")), dir, c) { true }
+        assertEquals(SyncOutcome.Partial(notUpdated = 1), sync.syncNow())
+
+        // The old doc-1 is kept (and cached), doc-3 arrived.
+        assertTrue(c.knowledge.document("doc-1")!!.pages.single().body.startsWith("Turn the gas valve"))
+        assertTrue(hasDoc(c, "doc-2") && hasDoc(c, "doc-3"))
+        val relaunched = controller("b")
+        OfficeSync(api, dir, relaunched) { true }.loadCached()
+        assertTrue(hasDoc(relaunched, "doc-1") && hasDoc(relaunched, "doc-3"))
+
+        // The stale copy is retried on the next sync, and a working network completes it.
+        api.fetched.clear()
+        assertEquals(SyncOutcome.Synced, OfficeSync(api, dir, c) { true }.syncNow())
+        assertEquals(listOf("doc-1"), api.fetched)
+        assertTrue(c.knowledge.document("doc-1")!!.pages.single().body.startsWith("Close the gas valve"))
+    }
+
+    @Test fun `a failed download with no cached copy is skipped while drops still apply`() = runBlocking {
+        val api = api(doc1, doc2)
+        val c = controller("a")
+        OfficeSync(api, dir, c) { true }.syncNow()
+
+        // doc-1 was revoked (left out of the manifest); new doc-3 fails with a 500.
+        val doc3 = doc("doc-3", "ZX-9", "Bleed the radiator with the key.", heading = "Heating")
+        api.served = listOf(meta(doc2) to doc2, meta(doc3) to doc3)
+        val sync = OfficeSync(failingDocs(api, setOf("doc-3")) { IOException("Office sync failed (HTTP 500)") }, dir, c) { true }
+        assertEquals(SyncOutcome.Partial(notUpdated = 1), sync.syncNow())
+        assertFalse(hasDoc(c, "doc-1")) // the revocation still reached the phone
+        assertTrue(hasDoc(c, "doc-2"))
+        assertFalse(hasDoc(c, "doc-3"))
+        assertEquals(listOf("doc-2"), c.state.value.packs.single { it.id == OFFICE_PACK_ID }.documentIds)
+        assertNotNull(c.job("office-j1")) // jobs still synced
+    }
+
+    @Test fun `a removed phone during a document download still forgets everything`() = runBlocking {
+        val api = api(doc1)
+        val c = controller("a")
+        OfficeSync(api, dir, c) { true }.syncNow()
+        api.served = listOf(meta(doc1, sha = "sha-new") to doc1)
+        val sync = OfficeSync(failingDocs(api, setOf("doc-1")) { DeviceRemovedException() }, dir, c) { true }
+        assertEquals(SyncOutcome.Removed, sync.syncNow())
+        assertFalse(hasDoc(c))
+    }
+
+    @Test fun `a manifest failure is still a failed sync with the cache intact`() = runBlocking {
+        val api = api(doc1)
+        val c = controller("a")
+        val sync = OfficeSync(api, dir, c) { true }
+        sync.syncNow()
+        val down = object : OfficeApi by api {
+            override suspend fun knowledge(): OfficeKnowledgeIndex = throw IOException("Office sync failed (HTTP 503)")
+        }
+        val out = OfficeSync(down, dir, c) { true }.syncNow()
+        assertTrue(out is SyncOutcome.Failed)
+        assertTrue(hasDoc(c))
+        assertTrue(File(dir, "knowledge.json").exists())
+    }
+
     @Test fun `a removed phone deletes the cache and forgets office manuals and jobs`() = runBlocking {
         val c = controller("a")
         val api = api(doc1)

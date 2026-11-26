@@ -106,23 +106,24 @@ describe("PeoplePage", () => {
   const revokePosts = (fetchMock: ReturnType<typeof mockApi>) =>
     fetchMock.mock.calls.filter(([u, i]) => String(u).endsWith("/devices/D1/revoke") && i?.method === "POST");
 
-  it("removes a phone when the confirmation is accepted", async () => {
+  it("asks on the page before removing a phone, then removes it", async () => {
     const fetchMock = mockApi(revokeHandler);
-    vi.stubGlobal("confirm", vi.fn(() => true));
     renderPage();
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Remove phone" }));
+    expect(revokePosts(fetchMock)).toHaveLength(0);
+    expect(screen.getByText("Remove SM-F966U? It stops working until paired again.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Yes, remove" }));
     await waitFor(() => expect(revokePosts(fetchMock)).toHaveLength(1));
   });
 
-  it("does not remove a phone when the confirmation is declined", async () => {
+  it("does not remove a phone when the removal is cancelled", async () => {
     const fetchMock = mockApi(revokeHandler);
-    const confirm = vi.fn(() => false);
-    vi.stubGlobal("confirm", confirm);
     renderPage();
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Remove phone" }));
-    expect(confirm).toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Remove phone" })).toBeInTheDocument();
     expect(revokePosts(fetchMock)).toHaveLength(0);
   });
 

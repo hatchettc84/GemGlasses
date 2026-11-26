@@ -107,6 +107,7 @@ function PeopleTable({ users }: { users: User[] }) {
 
 function DevicesTable({ devices }: { devices: Device[] }) {
   const revoke = useRevokeDevice();
+  const [confirming, setConfirming] = useState<string | null>(null);
   if (devices.length === 0) return <p className="muted">No phones paired yet.</p>;
   return (
     <>
@@ -121,9 +122,18 @@ function DevicesTable({ devices }: { devices: Device[] }) {
               <td>{when(d.pairedAt)}</td>
               <td>{when(d.lastSeenAt)}</td>
               <td>
-                {d.revokedAt ? "Removed" : (
-                  <button type="button" disabled={revoke.isPending}
-                    onClick={() => { if (window.confirm(`Remove ${d.label}? It will stop working until paired again.`)) revoke.mutate(d.id); }}>
+                {d.revokedAt ? "Removed" : confirming === d.id ? (
+                  <span className="confirm" role="group" aria-label={`Confirm removing ${d.label}`}>
+                    <span>Remove {d.label}? It stops working until paired again.</span>
+                    <button type="button" className="danger" disabled={revoke.isPending}
+                      onClick={() => revoke.mutate(d.id, { onSettled: () => setConfirming(null) })}>
+                      Yes, remove
+                    </button>
+                    <button type="button" className="secondary" onClick={() => setConfirming(null)}>Cancel</button>
+                  </span>
+                ) : (
+                  <button type="button" className="danger" disabled={revoke.isPending}
+                    onClick={() => setConfirming(d.id)}>
                     Remove phone
                   </button>
                 )}

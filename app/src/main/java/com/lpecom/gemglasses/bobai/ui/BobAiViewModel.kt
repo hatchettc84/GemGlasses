@@ -63,6 +63,7 @@ class BobAiViewModel @Inject constructor(
     private val cameraSource: GlassesCameraSource,
     val workMode: WorkModeController,
     val voice: BobVoiceAssistant,
+    val stickies: com.lpecom.gemglasses.bobai.data.StickyRepository,
     val offline: com.lpecom.gemglasses.bobai.offline.OfflineAssistant,
     private val pairingClient: com.lpecom.gemglasses.bobai.sync.PairingClient,
     private val deviceKeys: com.lpecom.gemglasses.bobai.sync.DeviceKeyStore,

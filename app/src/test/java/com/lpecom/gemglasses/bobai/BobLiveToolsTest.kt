@@ -27,13 +27,13 @@ class BobLiveToolsTest {
 
     private fun JsonObject.str(key: String) = getValue(key).jsonPrimitive.content
 
-    @Test fun `declares exactly the read-only tools plus camera on and off and end conversation`() {
-        // No tool may change the procedure; the only side effects are the camera and ending the session.
+    @Test fun `declares exactly the read-only tools plus camera on and off, save sticky and end conversation`() {
+        // No tool may change the procedure; the only side effects are the camera, saving a local sticky note, and ending the session.
         val names = BobLiveTools.declarations.flatMap { it.functionDeclarations.orEmpty() }.map { it.name }
         assertEquals(
             listOf(
                 BobLiveTools.SEARCH, BobLiveTools.CURRENT_STEP, BobLiveTools.START_LIVE_VIEW, BobLiveTools.LIST_JOBS,
-                BobLiveTools.STOP_LIVE_VIEW, BobLiveTools.END_CONVERSATION,
+                BobLiveTools.STOP_LIVE_VIEW, BobLiveTools.SAVE_STICKY, BobLiveTools.END_CONVERSATION,
             ),
             names,
         )

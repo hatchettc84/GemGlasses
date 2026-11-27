@@ -57,6 +57,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -2189,5 +2190,73 @@ private fun KnowledgeSyncCard() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         SecondaryAction("Sync now", {}, enabled = false)
+    }
+}
+
+private fun fmtDateTime(t: Long): String =
+    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(t))
+
+/** Notes and drafts Bob saved by voice. They stay on this phone; drafts are never sent. */
+@Composable
+fun NotesScreen(vm: BobAiViewModel) {
+    val stickies by vm.stickies.stickies.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var confirmDelete by androidx.compose.runtime.remember { mutableStateOf<com.lpecom.gemglasses.bobai.domain.Sticky?>(null) }
+    Column(Modifier.fillMaxSize()) {
+        ScreenHeader("Notes") {
+            TechnicalBadge("TOTAL", "${stickies.size}")
+            Spacer(Modifier.width(8.dp))
+        }
+        ScrollPage {
+            if (stickies.isEmpty()) {
+                Text(
+                    "No notes yet. Say \"Hey Bob, make a note…\" or \"draft a message…\" and it will show up here.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            stickies.forEach { s ->
+                val isDraft = s.kind == com.lpecom.gemglasses.bobai.domain.StickyKind.DRAFT
+                SectionCard(
+                    title = s.title,
+                    modifier = Modifier.alpha(if (s.done) 0.55f else 1f),
+                    accentTone = if (s.done) Tone.OK else if (isDraft) Tone.WARN else Tone.NEUTRAL,
+                    trailingHeader = { StatusChip(if (isDraft) "Draft" else "Note", Tone.NEUTRAL) },
+                ) {
+                    Text(s.text)
+                    s.jobTitle?.let { Text("Job: $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Text(fmtDateTime(s.createdAt), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SecondaryAction(
+                            if (s.done) "Mark not done" else "Mark done",
+                            { vm.stickies.setDone(s.id, !s.done) },
+                        )
+                        if (isDraft) {
+                            SecondaryAction("Copy", {
+                                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText(s.title, s.text))
+                                vm.message = "Draft copied"
+                            })
+                        }
+                        SecondaryAction("Delete", { confirmDelete = s })
+                    }
+                }
+            }
+        }
+    }
+    confirmDelete?.let { s ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete this ${if (s.kind == com.lpecom.gemglasses.bobai.domain.StickyKind.DRAFT) "draft" else "note"}?") },
+            text = { Text("\"${s.title}\" will be removed from this phone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.stickies.delete(s.id)
+                    confirmDelete = null
+                }) { Text("Delete", fontWeight = FontWeight.ExtraBold) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
     }
 }

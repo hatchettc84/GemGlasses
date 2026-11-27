@@ -12,6 +12,7 @@ import com.lpecom.gemglasses.audio.BluetoothAudioRouter
 import com.lpecom.gemglasses.audio.MicStreamer
 import com.lpecom.gemglasses.audio.SpeakerSink
 import com.lpecom.gemglasses.bobai.data.BobAiController
+import com.lpecom.gemglasses.bobai.data.StickyRepository
 import com.lpecom.gemglasses.gemini.DeviceRemovedException
 import com.lpecom.gemglasses.gemini.SessionConfig
 import com.lpecom.gemglasses.gemini.SessionEvent
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import com.lpecom.gemglasses.audio.DeadAudioRouteException
 import javax.inject.Inject
@@ -85,6 +87,7 @@ class BobVoiceAssistant @Inject constructor(
     private val router: BluetoothAudioRouter,
     private val cameraSource: GlassesCameraSource,
     private val controller: BobAiController,
+    private val stickies: StickyRepository,
     private val legacyAgent: AgentController,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -338,6 +341,17 @@ class BobVoiceAssistant @Inject constructor(
         }
     }
 
+    private fun saveSticky(call: FunctionCall): JsonObject {
+        fun arg(name: String) = (call.args[name] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        return when (val a = StickyArgs.parse(arg("kind"), arg("title"), arg("text"), arg("job"))) {
+            is StickyArgsResult.Error -> BobLiveTools.stickyErrorJson(a.reason)
+            is StickyArgsResult.Ok -> {
+                val saved = stickies.add(a.kind, a.title, a.text, a.job)
+                BobLiveTools.stickySavedJson(saved.title)
+            }
+        }
+    }
+
     private fun answerTools(calls: List<FunctionCall>) {
         val responses = calls.map { call ->
             val result = runCatching {
@@ -365,13 +379,15 @@ class BobVoiceAssistant @Inject constructor(
                         endAfterReply.request()
                         BobLiveTools.endConversationJson()
                     }
+                    BobLiveTools.SAVE_STICKY -> saveSticky(call)
                     else -> BobLiveTools.unknownTool(call.name)
                 }
             }.getOrElse { e ->
                 Log.e(TAG, "tool ${call.name} failed", e)
                 BobLiveTools.unknownTool(call.name)
             }
-            Log.i(TAG, "tool ${call.name} -> ${result["status"]}")
+            // Never log arguments: sticky titles and text are the technician's own words.
+            Log.i(TAG, "tool ${call.name} -> ${result["status"] ?: result["result"]}")
             FunctionResponse(id = call.id, name = call.name, response = result)
         }
         sessionKeeper.sendToolResponses(responses)

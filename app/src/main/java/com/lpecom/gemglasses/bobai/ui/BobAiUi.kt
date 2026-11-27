@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
@@ -637,6 +638,7 @@ fun BrandProfileSelector(modifier: Modifier = Modifier) {
 object Routes {
     const val HOME = "home"
     const val JOBS = "jobs"
+    const val NOTES = "notes"
     const val LIBRARY = "library"
     const val SETTINGS = "settings"
     const val ASSISTANT = "assistant"
@@ -651,6 +653,7 @@ object Routes {
 private enum class TopTab(val route: String, val label: String, val icon: ImageVector) {
     HOME(Routes.HOME, "Home", Icons.Filled.Home),
     JOBS(Routes.JOBS, "Jobs", Icons.Filled.Work),
+    NOTES(Routes.NOTES, "Notes", Icons.Filled.Edit),
     LIBRARY(Routes.LIBRARY, "Library", Icons.AutoMirrored.Filled.MenuBook),
     SETTINGS(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 }
@@ -761,6 +764,7 @@ fun BobAiRoot(legacyContent: @Composable () -> Unit) {
                         NavHost(nav, startDestination = Routes.HOME) {
                             composable(Routes.HOME) { HomeScreen(vm, nav) }
                             composable(Routes.JOBS) { JobsScreen(vm, nav) }
+                            composable(Routes.NOTES) { NotesScreen(vm) }
                             composable(Routes.LIBRARY) { LibraryScreen(vm, nav) }
                             composable(Routes.SETTINGS) { SettingsScreen(vm, nav) }
                             composable(Routes.ASSISTANT) { AssistantScreen(vm, nav) }

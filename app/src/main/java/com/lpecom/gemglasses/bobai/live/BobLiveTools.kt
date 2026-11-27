@@ -33,6 +33,7 @@ object BobLiveTools {
     const val STOP_LIVE_VIEW = "stop_live_view"
     const val LIST_JOBS = "list_my_jobs"
     const val END_CONVERSATION = "end_conversation"
+    const val SAVE_STICKY = "save_sticky"
 
     val declarations: List<Tool> = listOf(
         Tool(
@@ -70,6 +71,22 @@ object BobLiveTools {
                     name = STOP_LIVE_VIEW,
                     description = "Turn the glasses camera off. Call it only when the technician asks you to.",
                     parameters = Json.parseToJsonElement("""{"type":"object","properties":{}}"""),
+                ),
+                FunctionDeclaration(
+                    name = SAVE_STICKY,
+                    description = "Save a sticky note or a draft (for example a message, email or report) for the " +
+                        "technician to review later in the app. Call it only when they ask you to note, remember, " +
+                        "jot down, write down or draft something. Drafts are never sent.",
+                    parameters = Json.parseToJsonElement(
+                        """
+                        {"type":"object","properties":{
+                        "kind":{"type":"string","enum":["note","draft"]},
+                        "title":{"type":"string","description":"A short title of 3-8 words"},
+                        "text":{"type":"string","description":"The full note or draft text"},
+                        "job":{"type":"string","description":"The title of the related job, if they mention one"}},
+                        "required":["kind","title","text"]}
+                        """.trimIndent(),
+                    ),
                 ),
                 FunctionDeclaration(
                     name = END_CONVERSATION,
@@ -128,6 +145,12 @@ object BobLiveTools {
         appendLine(
             "8. When the technician says goodbye, \"thanks, that's all\", \"that's it\" or otherwise says they " +
                 "are done, call $END_CONVERSATION, then say a very short goodbye. Do not call it at any other time.",
+        )
+        appendLine(
+            "9. When the technician asks you to note, remember, jot down, write down or draft something, call " +
+                "$SAVE_STICKY (kind draft for messages, emails or reports, otherwise note), then tell them the title " +
+                "you saved and that it is in the Notes tab. Never save one they did not ask for. Drafts are never " +
+                "sent; never say you sent anything.",
         )
         append("Confirmed equipment: ")
         append(
@@ -227,6 +250,16 @@ object BobLiveTools {
         LiveViewResult.ALREADY_ON -> status("already_on", "The camera is already on.")
         LiveViewResult.STOPPED -> status("stopped", "The camera is off.")
         LiveViewResult.UNAVAILABLE -> status("unavailable", "The glasses camera is not available. Ask them to check the glasses are connected.")
+    }
+
+    fun stickySavedJson(title: String): JsonObject = buildJsonObject {
+        put("result", "saved")
+        put("title", title)
+    }
+
+    fun stickyErrorJson(reason: String): JsonObject = buildJsonObject {
+        put("result", "error")
+        put("reason", reason)
     }
 
     fun unknownTool(name: String): JsonObject = status("error", "Unknown tool: $name")

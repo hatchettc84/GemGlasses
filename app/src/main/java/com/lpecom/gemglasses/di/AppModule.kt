@@ -59,6 +59,19 @@ object AppModule {
         })
     }
 
+    /** Bob's saved notes and drafts: one local JSON file, written off the main thread. Never networked. */
+    @Provides
+    @Singleton
+    fun stickyRepository(@ApplicationContext context: Context): com.lpecom.gemglasses.bobai.data.StickyRepository {
+        val store = com.lpecom.gemglasses.bobai.data.StickyStore(File(context.filesDir, "bobai/stickies.json"))
+        val writer = Executors.newSingleThreadExecutor()
+        return com.lpecom.gemglasses.bobai.data.StickyRepository(store, persist = { list ->
+            writer.execute {
+                runCatching { store.save(list) }.onFailure { Log.e("BobAI", "Saving stickies failed", it) }
+            }
+        })
+    }
+
     /** Downloads approved manuals and assigned jobs for Bob; caches them under files/bobai/office. */
     @Provides
     @Singleton

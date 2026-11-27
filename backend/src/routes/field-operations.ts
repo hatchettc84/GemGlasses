@@ -92,7 +92,7 @@ fieldOperations.patch("/jobs/:id", async (c) => {
 });
 fieldOperations.get("/documents", async (c) => {
   const { results } = await c.env.DB.prepare(
-    "SELECT id,title,revision,models_json,sha256,version FROM documents WHERE tenant_id=? AND status='approved' ORDER BY title",
+    `SELECT d.id,d.title,d.revision,d.models_json,d.sha256,d.version,d.kind,${AUTHOR} FROM documents d WHERE d.tenant_id=? AND d.status='approved' ORDER BY d.title`,
   )
     .bind(c.get("device").tenantId)
     .all();
@@ -124,8 +124,9 @@ fieldOperations.get("/documents/:id/file", async (c) => {
 // /knowledge is a manifest only (no page text); the phone downloads the pages
 // of new or changed documents from /knowledge/:id and drops cached documents
 // that are no longer listed, which is how a revocation reaches it.
+const AUTHOR = "CASE WHEN d.kind='tip' THEN (SELECT u.name FROM users u WHERE u.id=d.created_by) END AS author";
 const KNOWLEDGE_TTL_MS = 24 * 60 * 60 * 1000;
-const knowledgeMeta = (r: Omit<DocumentRow, "pages_json">) => ({
+const knowledgeMeta = (r: Omit<DocumentRow, "pages_json"> & { author?: string | null }) => ({
   id: r.id,
   tenantId: r.tenant_id,
   title: r.title,
@@ -137,14 +138,17 @@ const knowledgeMeta = (r: Omit<DocumentRow, "pages_json">) => ({
   isMock: false,
   version: r.version,
   sha256: r.sha256,
+  kind: r.kind,
+  // Only tips have an author; manuals omit the field.
+  ...(r.kind === "tip" && r.author ? { author: r.author } : {}),
 });
 fieldOperations.get("/knowledge", async (c) => {
   const d = c.get("device");
   const { results } = await c.env.DB.prepare(
-    "SELECT id,tenant_id,title,revision,models_json,sha256,version FROM documents WHERE tenant_id=? AND status='approved' ORDER BY id",
+    `SELECT d.id,d.tenant_id,d.title,d.revision,d.models_json,d.sha256,d.version,d.kind,${AUTHOR} FROM documents d WHERE d.tenant_id=? AND d.status='approved' ORDER BY d.id`,
   )
     .bind(d.tenantId)
-    .all<Omit<DocumentRow, "pages_json">>();
+    .all<Omit<DocumentRow, "pages_json"> & { author: string | null }>();
   const now = Date.now();
   return c.json({
     tenantId: d.tenantId,
@@ -155,10 +159,10 @@ fieldOperations.get("/knowledge", async (c) => {
 });
 fieldOperations.get("/knowledge/:id", async (c) => {
   const row = await c.env.DB.prepare(
-    "SELECT * FROM documents WHERE tenant_id=? AND id=? AND status='approved'",
+    `SELECT d.*,${AUTHOR} FROM documents d WHERE d.tenant_id=? AND d.id=? AND d.status='approved'`,
   )
     .bind(c.get("device").tenantId, c.req.param("id"))
-    .first<DocumentRow>();
+    .first<DocumentRow & { author: string | null }>();
   if (!row)
     throw new ApiError(404, "not_found", "Approved document not found.");
   const { version, sha256, ...doc } = knowledgeMeta(row);

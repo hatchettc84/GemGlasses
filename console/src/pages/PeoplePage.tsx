@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useCreateUser, useDevices, useIssuePairingCode, useMe, useRevokeDevice, useUsers } from "../api/hooks";
+import { useCreateUser, useDevices, useIssuePairingCode, useMe, useRevokeDevice, useSetSenior, useUsers } from "../api/hooks";
 import { ROLES, type Device, type PairingCode, type Role, type User } from "../api/types";
 
 const message = (err: unknown) => (err instanceof Error ? err.message : "Something went wrong. Try again.");
@@ -68,6 +68,7 @@ function AddPersonForm() {
 
 function PeopleTable({ users }: { users: User[] }) {
   const issue = useIssuePairingCode();
+  const setSenior = useSetSenior();
   const [shown, setShown] = useState<{ user: User; code: PairingCode } | null>(null);
 
   return (
@@ -80,8 +81,9 @@ function PeopleTable({ users }: { users: User[] }) {
         </div>
       )}
       {issue.error && <p role="alert">{message(issue.error)}</p>}
+      {setSenior.error && <p role="alert">{message(setSenior.error)}</p>}
       <table>
-        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th><span className="visually-hidden">Actions</span></th></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Senior tech</th><th><span className="visually-hidden">Actions</span></th></tr></thead>
         <tbody>
           {users.map((u) => (
             <tr key={u.id}>
@@ -89,6 +91,16 @@ function PeopleTable({ users }: { users: User[] }) {
               <td>{u.email}</td>
               <td>{u.role}</td>
               <td>{u.active ? "Active" : "Inactive"}</td>
+              <td>
+                {u.role === "technician" && (
+                  <label className="inline-check">
+                    <input type="checkbox" checked={u.senior} disabled={setSenior.isPending}
+                      aria-label={`Senior tech: ${u.name}`}
+                      onChange={(e) => setSenior.mutate({ user: u, senior: e.target.checked })} />
+                    {" "}Senior tech
+                  </label>
+                )}
+              </td>
               <td>
                 {u.role === "technician" && u.active && (
                   <button type="button" disabled={issue.isPending}

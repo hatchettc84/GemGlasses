@@ -19,7 +19,7 @@ export function ManualsPage() {
   return (
     <section>
       <h1>Manuals</h1>
-      <p className="muted">Technicians only see approved manuals.</p>
+      <p className="muted">Technicians only see approved manuals and tips. Senior technicians send tips from their phones; review them here like a manual.</p>
       {canReview ? <UploadForm /> : <p className="muted">Only admins and reviewers can upload or approve manuals.</p>}
       {docs.error ? <p role="alert">{message(docs.error)}</p> : docs.isPending ? <p>Loading…</p> : (
         <DocumentsTable docs={docs.data.documents} canReview={canReview} />
@@ -92,9 +92,12 @@ function DocumentsTable({ docs, canReview }: { docs: ManualDoc[]; canReview: boo
           {docs.map((d) => (
             <Fragment key={d.id}>
               <tr>
-                <td>{d.title}</td>
-                <td>{d.revision}</td>
-                <td>{d.models.join(", ")}</td>
+                <td>
+                  {d.kind === "tip" && <span className="badge">Tip</span>} {d.title}
+                  {d.kind === "tip" && d.author && <div className="muted">by {d.author}</div>}
+                </td>
+                <td>{d.kind === "tip" ? "—" : d.revision}</td>
+                <td>{d.kind === "tip" ? "—" : d.models.join(", ")}</td>
                 <td>{STATUS_LABEL[d.status]}</td>
                 <td>
                   <span className="confirm">
@@ -102,7 +105,7 @@ function DocumentsTable({ docs, canReview }: { docs: ManualDoc[]; canReview: boo
                       onClick={() => setOpen(open === d.id ? null : d.id)}>
                       {open === d.id ? "Hide text" : "View text"}
                     </button>
-                    <a href={documentFileUrl(d.id)} download={d.filename}>Download original</a>
+                    {d.kind !== "tip" && <a href={documentFileUrl(d.id)} download={d.filename}>Download original</a>}
                   </span>
                   {canReview && d.status !== "revoked" && (confirming === d.id ? (
                     <span className="confirm" role="group" aria-label={`Confirm revoking ${d.title}`}>
@@ -151,8 +154,8 @@ function DocumentText({ doc, onLoaded }: { doc: ManualDoc; onLoaded: (id: string
   }, [loaded, onLoaded, doc.id]);
   return (
     <section id={`text-${doc.id}`} className="card" aria-label={`Extracted text of ${doc.title}`}>
-      <h2>Extracted text: {doc.title} rev {doc.revision}</h2>
-      <p className="muted">This is the text Bob will quote. Compare it with the original file before approving.</p>
+      <h2>{doc.kind === "tip" ? `Tip: ${doc.title}${doc.author ? ` (from ${doc.author})` : ""}` : `Extracted text: ${doc.title} rev ${doc.revision}`}</h2>
+      <p className="muted">{doc.kind === "tip" ? "This is the text Bob will quote, as the technician wrote it. Read it before approving." : "This is the text Bob will quote. Compare it with the original file before approving."}</p>
       {pages.error ? <p role="alert">{message(pages.error)}</p> : pages.isPending ? <p>Loading text…</p> : (
         pages.data.pages.length === 0 ? <p className="muted">This document has no extracted text.</p> : (
           pages.data.pages.map((p) => (

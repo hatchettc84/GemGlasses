@@ -19,6 +19,15 @@ export function useCreateUser() {
   });
 }
 
+export function useSetSenior() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ user, senior }: { user: User; senior: boolean }) =>
+      apiFetch<{ user: User }>(`/users/${encodeURIComponent(user.id)}`, { method: "PATCH", body: { senior, updatedAt: user.updatedAt } }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
 export const useIssuePairingCode = () =>
   useMutation({
     mutationFn: (userId: string) => apiFetch<PairingCode>(`/users/${userId}/pairing-code`, { method: "POST" }),

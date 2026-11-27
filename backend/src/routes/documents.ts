@@ -24,14 +24,16 @@ export type DocumentRow = {
   sha256: string;
   storage_key: string;
   status: string;
+  kind: string;
   version: number;
   updated_at: string;
 };
 // The list never carries page text (it can be ~1 MB per document); one document's
 // pages come from GET /documents/:id/pages.
-type DocumentListRow = Omit<DocumentRow, "pages_json"> & { page_count: number };
+type DocumentListRow = Omit<DocumentRow, "pages_json"> & { page_count: number; author: string | null };
+// Tips carry their author's display name; manuals have no author.
 const LIST_COLUMNS =
-  "id,tenant_id,title,revision,models_json,filename,content_type,size_bytes,sha256,storage_key,status,version,updated_at,json_array_length(pages_json) AS page_count";
+  "d.id,d.tenant_id,d.title,d.revision,d.models_json,d.filename,d.content_type,d.size_bytes,d.sha256,d.storage_key,d.status,d.kind,d.version,d.updated_at,json_array_length(d.pages_json) AS page_count,CASE WHEN d.kind='tip' THEN (SELECT u.name FROM users u WHERE u.id=d.created_by) END AS author";
 const publicDoc = (d: DocumentListRow) => ({
   ...d,
   storage_key: undefined,
@@ -42,7 +44,7 @@ documents.get(
   requireRole("admin", "dispatcher", "reviewer"),
   async (c) => {
     const { results } = await c.env.DB.prepare(
-      `SELECT ${LIST_COLUMNS} FROM documents WHERE tenant_id=? ORDER BY updated_at DESC LIMIT 500`,
+      `SELECT ${LIST_COLUMNS} FROM documents d WHERE d.tenant_id=? ORDER BY d.updated_at DESC LIMIT 500`,
     )
       .bind(c.get("user").tenantId)
       .all<DocumentListRow>();
@@ -55,16 +57,18 @@ documents.get(
   requireRole("admin", "dispatcher", "reviewer"),
   async (c) => {
     const row = await c.env.DB.prepare(
-      "SELECT id,title,revision,status,version,pages_json FROM documents WHERE tenant_id=? AND id=?",
+      "SELECT d.id,d.title,d.revision,d.status,d.kind,d.version,d.pages_json,CASE WHEN d.kind='tip' THEN (SELECT u.name FROM users u WHERE u.id=d.created_by) END AS author FROM documents d WHERE d.tenant_id=? AND d.id=?",
     )
       .bind(c.get("user").tenantId, c.req.param("id"))
-      .first<Pick<DocumentRow, "id" | "title" | "revision" | "status" | "version" | "pages_json">>();
+      .first<Pick<DocumentRow, "id" | "title" | "revision" | "status" | "kind" | "version" | "pages_json"> & { author: string | null }>();
     if (!row) throw new ApiError(404, "not_found", "Document not found.");
     return c.json({
       id: row.id,
       title: row.title,
       revision: row.revision,
       status: row.status,
+      kind: row.kind,
+      author: row.author,
       version: row.version,
       pages: JSON.parse(row.pages_json),
     });

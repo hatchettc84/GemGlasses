@@ -25,7 +25,7 @@ function renderPage() {
 }
 
 const admin = { id: "A1", email: "boss@example.com", name: "Boss", role: "admin" };
-const tech = { id: "T1", email: "tia@example.com", name: "Tia", role: "technician", active: true, createdAt: "", updatedAt: "" };
+const tech = { id: "T1", email: "tia@example.com", name: "Tia", role: "technician", active: true, senior: false, createdAt: "", updatedAt: "" };
 const phone = { id: "D1", label: "SM-F966U", pairedAt: "2026-11-20T11:00:00.000Z", lastSeenAt: null, revokedAt: null, user: { id: "T1", name: "Tia", email: "tia@example.com" } };
 
 describe("PeoplePage", () => {
@@ -45,6 +45,10 @@ describe("PeoplePage", () => {
       const user = { id: "N1", active: true, createdAt: "", updatedAt: "", ...input };
       users = [...users, user];
       return { status: 201, body: { user } };
+    }
+    if (url.endsWith("/users/T1") && method === "PATCH") {
+      const input = JSON.parse(String(init?.body));
+      return { status: 200, body: { user: { ...tech, senior: input.senior } } };
     }
     if (url.endsWith("/users/T1/pairing-code")) return { status: 201, body: { code: "482913", expiresAt: "2026-11-20T12:10:00.000Z" } };
     if (url.endsWith("/devices")) return { status: 200, body: { devices: [phone] } };
@@ -81,6 +85,19 @@ describe("PeoplePage", () => {
     expect(await screen.findByText("482913")).toBeInTheDocument();
     expect(fetchMock.mock.calls.some(([u, i]) => String(u).endsWith("/users/T1/pairing-code") && i?.method === "POST")).toBe(true);
     expect(screen.getByText(/Enter it on Tia's phone/)).toBeInTheDocument();
+  });
+
+  it("marks a technician as a senior tech, only offered for technicians", async () => {
+    const fetchMock = mockApi(handler);
+    renderPage();
+    const user = userEvent.setup();
+    const row = (await screen.findByRole("cell", { name: "tia@example.com" })).closest("tr")!;
+    await user.click(within(row).getByRole("checkbox", { name: "Senior tech: Tia" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u, i]) => String(u).endsWith("/users/T1") && i?.method === "PATCH")).toBe(true));
+    const patch = fetchMock.mock.calls.find(([u, i]) => String(u).endsWith("/users/T1") && i?.method === "PATCH");
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ senior: true, updatedAt: "" });
+    const adminRow = (await screen.findByRole("cell", { name: "boss@example.com" })).closest("tr")!;
+    expect(within(adminRow).queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
   it("explains when the signed-in person is not an admin", async () => {

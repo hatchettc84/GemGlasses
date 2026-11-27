@@ -13,6 +13,7 @@ interface UserRow {
   name: string;
   role: Role;
   active: number;
+  senior: number;
   created_at: string;
   updated_at: string;
 }
@@ -24,6 +25,7 @@ export function userJson(r: UserRow) {
     name: r.name,
     role: r.role,
     active: r.active === 1,
+    senior: r.senior === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -59,7 +61,7 @@ adminUsers.post("/users", requireRole("admin"), async (c) => {
   if (taken) throw new ApiError(409, "email_taken", "Someone with that email is already in BobAI.");
 
   const now = nowIso();
-  const row: UserRow = { id: ulid(), tenant_id: actor.tenantId, email, name, role: body.role, active: 1, created_at: now, updated_at: now };
+  const row: UserRow = { id: ulid(), tenant_id: actor.tenantId, email, name, role: body.role, active: 1, senior: 0, created_at: now, updated_at: now };
   await c.env.DB.batch([
     c.env.DB.prepare(
       "INSERT INTO users (id, tenant_id, email, name, role, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
@@ -72,7 +74,7 @@ adminUsers.post("/users", requireRole("admin"), async (c) => {
 adminUsers.patch("/users/:id", requireRole("admin"), async (c) => {
   const actor = c.get("user");
   const id = c.req.param("id");
-  const body = await readJson<{ role?: string; active?: unknown; updatedAt?: string }>(c);
+  const body = await readJson<{ role?: string; active?: unknown; senior?: unknown; updatedAt?: string }>(c);
   const row = await c.env.DB.prepare("SELECT * FROM users WHERE tenant_id = ? AND id = ?")
     .bind(actor.tenantId, id).first<UserRow>();
   if (!row) throw new ApiError(404, "not_found", "That person was not found.");
@@ -85,22 +87,31 @@ adminUsers.patch("/users/:id", requireRole("admin"), async (c) => {
   if (body.active !== undefined && typeof body.active !== "boolean") {
     throw new ApiError(400, "invalid_active", "Active must be true or false.");
   }
+  if (body.senior !== undefined && typeof body.senior !== "boolean") {
+    throw new ApiError(400, "invalid_senior", "Senior must be true or false.");
+  }
+  const nextRole = (body.role as Role | undefined) ?? row.role;
+  if (body.senior !== undefined && nextRole !== "technician") {
+    throw new ApiError(400, "not_a_technician", "Only technicians can be senior technicians.");
+  }
   if (id === actor.id && ((body.role !== undefined && body.role !== "admin") || body.active === false)) {
     throw new ApiError(400, "cannot_change_self", "You can't remove your own admin access.");
   }
 
   const next: UserRow = {
     ...row,
-    role: (body.role as Role | undefined) ?? row.role,
+    role: nextRole,
     active: body.active === undefined ? row.active : body.active ? 1 : 0,
+    // Seniority only means something for technicians, so it clears when the role changes away.
+    senior: nextRole !== "technician" ? 0 : body.senior === undefined ? row.senior : body.senior ? 1 : 0,
     updated_at: nowIso(),
   };
   // The UPDATE only applies if nobody changed the row since we read it; the audit insert
   // only runs if the UPDATE's new updated_at is on the row. Same batch = same transaction.
   const [update] = await c.env.DB.batch([
     c.env.DB.prepare(
-      "UPDATE users SET role = ?, active = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND updated_at = ?",
-    ).bind(next.role, next.active, next.updated_at, id, actor.tenantId, row.updated_at),
+      "UPDATE users SET role = ?, active = ?, senior = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND updated_at = ?",
+    ).bind(next.role, next.active, next.senior, next.updated_at, id, actor.tenantId, row.updated_at),
     auditStmtIfExists(
       c.env.DB,
       "SELECT 1 FROM users WHERE id = ? AND tenant_id = ? AND updated_at = ?",

@@ -33,15 +33,19 @@ const draft = { id: "D1", title: "Boiler manual", revision: "B", filename: "b.pd
 const approved = { ...draft, id: "D2", title: "Pump manual", status: "approved", version: 5 };
 const revoked = { ...draft, id: "D3", title: "Old manual", status: "revoked" };
 
+const tip = { ...draft, id: "D9", title: "Prime the pump", revision: "tip", filename: "tip.txt", models: [], kind: "tip", author: "Eve Expert" };
+
 describe("ManualsPage", () => {
   const handler: Handler = (url, init) => {
     const method = init?.method ?? "GET";
     if (url.endsWith("/me")) return { status: 200, body: admin };
-    if (url.endsWith("/documents") && method === "GET") return { status: 200, body: { documents: [draft, approved, revoked] } };
+    if (url.endsWith("/documents") && method === "GET") return { status: 200, body: { documents: [draft, approved, revoked, tip] } };
     if (url.endsWith("/documents") && method === "POST") return { status: 201, body: { id: "N1", status: "draft" } };
     if (url.includes("/documents/") && method === "PATCH") return { status: 200, body: { ok: true } };
     if (url.endsWith("/documents/D1/pages") && method === "GET")
       return { status: 200, body: { id: "D1", title: "Boiler manual", revision: "B", status: "draft", version: 2, pages: [{ number: 4, heading: "Igniter", body: "Torque the igniter to 12 Nm." }] } };
+    if (url.endsWith("/documents/D9/pages") && method === "GET")
+      return { status: 200, body: { id: "D9", title: "Prime the pump", revision: "tip", status: "draft", kind: "tip", author: "Eve Expert", version: 2, pages: [{ number: 1, heading: "Prime the pump", body: "Open the bleed screw first." }] } };
     return { status: 404, body: { error: "not_found", message: "Not found." } };
   };
   const rowOf = async (title: string) => (await screen.findByRole("cell", { name: title })).closest("tr")!;
@@ -66,6 +70,26 @@ describe("ManualsPage", () => {
     // A revoked manual can still be read, but not approved or revoked again.
     const r = within(await rowOf("Old manual"));
     expect(r.getAllByRole("button").map((b) => b.textContent)).toEqual(["View text"]);
+  });
+
+  it("shows a tip with a Tip label and its author, readable and approvable, without a download", async () => {
+    const f = mockApi(handler);
+    renderPage();
+    const user = userEvent.setup();
+    const row = (await screen.findByText("Prime the pump")).closest("tr")!;
+    const r = within(row);
+    expect(r.getByText("Tip")).toBeInTheDocument();
+    expect(r.getByText("by Eve Expert")).toBeInTheDocument();
+    expect(r.queryByRole("link", { name: "Download original" })).not.toBeInTheDocument();
+    expect(r.getByRole("button", { name: "Approve" })).toBeDisabled();
+    await user.click(r.getByRole("button", { name: "View text" }));
+    expect(await screen.findByText("Open the bleed screw first.")).toBeInTheDocument();
+    await waitFor(() => expect(r.getByRole("button", { name: "Approve" })).toBeEnabled());
+    await user.click(r.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(calls(f, "PATCH", "/documents/D9")).toHaveLength(1));
+    expect(JSON.parse(String(calls(f, "PATCH", "/documents/D9")[0][1]!.body))).toEqual({ status: "approved", version: 2 });
+    // No way to create a tip from the console.
+    expect(screen.queryByLabelText(/tip text/i)).not.toBeInTheDocument();
   });
 
   it("uploads a manual as multipart form data", async () => {

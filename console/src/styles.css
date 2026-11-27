@@ -82,3 +82,4 @@ th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--surface-
   border: 1px solid var(--on-surface-variant);
   font-size: 0.8rem;
 }
+.inline-check { display: inline-flex; align-items: center; gap: 0.25rem; }

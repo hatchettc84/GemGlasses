@@ -32,7 +32,7 @@ describe("device pairing", () => {
 
     const me = await api("/api/device/me", { headers: { Authorization: `Bearer ${body.deviceKey}` } });
     expect(me.status).toBe(200);
-    expect(await me.json()).toEqual({ deviceId: body.deviceId, user: { name: "Tia", email: "tia@example.com" } });
+    expect(await me.json()).toEqual({ deviceId: body.deviceId, user: { name: "Tia", email: "tia@example.com" }, senior: false });
     expect(await auditActions()).toContain("device.paired");
   });
 

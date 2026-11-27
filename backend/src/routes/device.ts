@@ -83,9 +83,50 @@ deviceApi.use("*", deviceAuth);
 
 deviceApi.get("/me", async (c) => {
   const device = c.get("device");
-  const user = await c.env.DB.prepare("SELECT name, email FROM users WHERE id = ?")
-    .bind(device.userId).first<{ name: string; email: string }>();
-  return c.json({ deviceId: device.id, user });
+  const row = await c.env.DB.prepare("SELECT name, email, senior FROM users WHERE id = ?")
+    .bind(device.userId).first<{ name: string; email: string; senior: number }>();
+  const user = row ? { name: row.name, email: row.email } : null;
+  return c.json({ deviceId: device.id, user, senior: row?.senior === 1 });
+});
+
+// Senior technicians send tips to the office as drafts, stored like an uploaded text file.
+// Tip titles and text are never logged or written to the audit trail.
+deviceApi.post("/tips", async (c) => {
+  const d = c.get("device");
+  const raw = await readJson<unknown>(c);
+  const body: { title?: unknown; text?: unknown } =
+    raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!title || title.length > 80 || !text || text.length > 4000) {
+    throw new ApiError(400, "invalid", "Give the tip a title (up to 80 characters) and text (up to 4000 characters).");
+  }
+  const user = await c.env.DB.prepare("SELECT senior FROM users WHERE id = ? AND tenant_id = ? AND active = 1 AND role = 'technician'")
+    .bind(d.userId, d.tenantId).first<{ senior: number }>();
+  if (!user || user.senior !== 1) {
+    throw new ApiError(403, "not_senior", "Only senior technicians can share tips.");
+  }
+  const pages = [{ number: 1, heading: title, body: text }];
+  const bytes = new TextEncoder().encode(text);
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
+    .map((x) => x.toString(16).padStart(2, "0")).join("");
+  const id = ulid();
+  const key = `${d.tenantId}/${id}/tip.txt`;
+  const now = nowIso();
+  await c.env.DOCUMENTS.put(key, bytes, { httpMetadata: { contentType: "text/plain" } });
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO documents (id,tenant_id,title,revision,models_json,pages_json,filename,content_type,size_bytes,sha256,storage_key,kind,created_by,created_at,updated_at)
+         VALUES (?,?,?,'tip','[]',?,'tip.txt','text/plain',?,?,?,'tip',?,?,?)`,
+      ).bind(id, d.tenantId, title, JSON.stringify(pages), bytes.byteLength, hash, key, d.userId, now, now),
+      auditStmt(c.env.DB, { type: "device", id: d.id, tenantId: d.tenantId }, "document.uploaded", "document", id, null, { kind: "tip", sha256: hash }),
+    ]);
+  } catch (err) {
+    await c.env.DOCUMENTS.delete(key);
+    throw err;
+  }
+  return c.json({ id, status: "draft" }, 201);
 });
 
 deviceApi.route("/", fieldOperations);

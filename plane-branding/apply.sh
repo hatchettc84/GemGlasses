@@ -69,6 +69,22 @@ node "$HERE/scripts/patch-code.mjs" "$SRC"
 echo "== text (titles, manifests, i18n values)"
 node "$HERE/scripts/rebrand-text.mjs" "$SRC"
 
+# Plane's Caddy serves pages with no Cache-Control, so browsers may reuse an old index.html for
+# days and keep running the previous build (seen after switching to the BobAI images). Pages are
+# revalidated on every load; content-hashed assets are cached for good.
+echo "== caddy cache headers"
+for app in web admin; do
+  cf="$SRC/apps/$app/caddy/Caddyfile"
+  if [[ ! -f "$cf" ]]; then
+    echo "apply.sh: WARNING missing $cf" >&2; missing=$((missing + 1)); continue
+  fi
+  if ! grep -q "bobai_assets" "$cf"; then
+    perl -0pi -e 's|(\n\t# SPA fallback)|\n\t# BobAI: always revalidate pages; hashed assets never change.\n\t\@bobai_assets path /assets/* /god-mode/assets/*\n\theader \@bobai_assets Cache-Control "public, max-age=31536000, immutable"\n\theader \@bobai_pages Cache-Control "no-cache"\n\t\@bobai_pages not path /assets/* /god-mode/assets/*\n$1|' "$cf"
+    grep -q "bobai_assets" "$cf" || { echo "apply.sh: WARNING could not patch $cf" >&2; missing=$((missing + 1)); }
+  fi
+  echo "   apps/$app/caddy/Caddyfile"
+done
+
 if (( missing > 0 )); then
   echo "apply.sh: done with $missing missing asset target(s) -- check the warnings above" >&2
 else

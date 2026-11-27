@@ -12,15 +12,24 @@ import java.util.Locale
  * links leave the app through an ACTION_VIEW intent. Everything else
  * (javascript:, file:, data:, intent:, content:, malformed URLs) is blocked.
  *
+ * A page on the admin origin (BobAI Admin, linked from the office sidebar as "Phones & manuals")
+ * never opens in a browser from the phone: it switches the app to its own Library tab
+ * ([Decision.OPEN_LIBRARY]). localhost and 127.0.0.1 on the same port count as one origin.
+ * If the office and admin origins are the same, the office wins.
+ *
  * Pure JVM logic so it can be unit-tested without Android.
  */
-class OfficeUrlPolicy(officeUrl: String) {
+class OfficeUrlPolicy(officeUrl: String, adminUrl: String = "") {
 
-    enum class Decision { IN_WEBVIEW, EXTERNAL, BLOCK }
+    enum class Decision { IN_WEBVIEW, OPEN_LIBRARY, EXTERNAL, BLOCK }
 
-    private data class Origin(val scheme: String, val host: String, val port: Int)
+    private data class Origin(val scheme: String, val host: String, val port: Int) {
+        /** localhost and 127.0.0.1 are one origin for the admin link (office matching stays exact). */
+        fun loopbackNormalized() = if (host == "127.0.0.1") copy(host = "localhost") else this
+    }
 
     private val office: Origin? = originOf(officeUrl)
+    private val admin: Origin? = originOf(adminUrl)?.loopbackNormalized()
 
     /** True when the configured office URL itself is a usable http(s) origin. */
     val isConfigured: Boolean get() = office != null
@@ -32,7 +41,11 @@ class OfficeUrlPolicy(officeUrl: String) {
         return when (scheme) {
             "http", "https" -> {
                 val origin = originOf(uri) ?: return Decision.BLOCK
-                if (office != null && origin == office) Decision.IN_WEBVIEW else Decision.EXTERNAL
+                when {
+                    office != null && origin == office -> Decision.IN_WEBVIEW
+                    admin != null && origin.loopbackNormalized() == admin -> Decision.OPEN_LIBRARY
+                    else -> Decision.EXTERNAL
+                }
             }
             "mailto" -> Decision.EXTERNAL
             else -> Decision.BLOCK

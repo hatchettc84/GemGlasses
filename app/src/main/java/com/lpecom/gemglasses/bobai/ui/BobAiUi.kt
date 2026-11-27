@@ -679,6 +679,8 @@ fun BobAiRoot(legacyContent: @Composable () -> Unit) {
     // One Office WebView for the whole BobAI UI, so switching tabs keeps the page and sign-in.
     val officeHost = remember { OfficeWebHost() }
     androidx.compose.runtime.DisposableEffect(officeHost) { onDispose { officeHost.destroy() } }
+    // "Phones & manuals" in the office sidebar opens the phone's own Library tab.
+    officeHost.onOpenLibrary = { nav.goTop(Routes.LIBRARY) }
 
     LaunchedEffect(vm.message) {
         vm.message?.let { snackbar.showSnackbar(it); vm.message = null }

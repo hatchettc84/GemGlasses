@@ -55,7 +55,8 @@ class KnowledgeRepository(
         return documents().filter { doc ->
             doc.tenantId == equipment.tenantId &&
                 doc.approvalStatus == ApprovalStatus.APPROVED &&
-                model in doc.applicableModels.map { it.uppercase() } &&
+                // A tip is general advice with no model list: it applies to any confirmed equipment.
+                (doc.isTip || model in doc.applicableModels.map { it.uppercase() }) &&
                 availability(doc).readable
         }
     }
@@ -102,6 +103,8 @@ class KnowledgeRepository(
         revision = doc.revision,
         page = page.number,
         excerpt = page.body.take(160),
+        kind = doc.kind,
+        author = doc.author,
     )
 
     private fun score(terms: Set<String>, page: DocPage): Int {

@@ -51,7 +51,8 @@ object GroundedPrompt {
     fun userMessage(question: String, answer: EvidenceAnswer.Answer): String {
         val c = answer.citations.first()
         return buildString {
-            appendLine("<source id=\"S1\" document=\"${c.documentTitle}\" revision=\"${c.revision}\" page=\"${c.page}\">")
+            val tip = if (c.isTip) " kind=\"tip\" author=\"${(c.author ?: "").replace("\"", "")}\"" else ""
+            appendLine("<source id=\"S1\" document=\"${c.documentTitle}\" revision=\"${c.revision}\" page=\"${c.page}\"$tip>")
             appendLine(answer.excerpt.replace("</source>", ""))
             appendLine("</source>")
             append("Question: ").append(question.trim())

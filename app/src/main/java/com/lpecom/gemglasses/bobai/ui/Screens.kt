@@ -1043,6 +1043,9 @@ fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
     val c = vm.controller
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(0) }
+    val senior by vm.senior.collectAsStateWithLifecycle()
+    var shareOpen by rememberSaveable { mutableStateOf(false) }
+    if (shareOpen && senior) ShareTipDialog(vm, onDismiss = { shareOpen = false })
     val equipment = c.activeSession()?.equipment
     val applicable = equipment?.let { c.knowledge.applicableDocuments(it).map { d -> d.id }.toSet() } ?: emptySet()
     val terms = com.lpecom.gemglasses.bobai.domain.KnowledgeRepository.tokenize(query)
@@ -1062,10 +1065,15 @@ fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
             Spacer(Modifier.width(8.dp))
         }
         ScrollPage {
+            if (senior) {
+                Button(onClick = { shareOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Share a tip", fontWeight = FontWeight.ExtraBold)
+                }
+            }
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                label = { Text("Search manuals") },
+                label = { Text("Search manuals and tips") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1089,6 +1097,65 @@ fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
     }
 }
 
+/** Two fields, Send. Kept text stays on failure. Only reachable for senior technicians. */
+@Composable
+private fun ShareTipDialog(vm: BobAiViewModel, onDismiss: () -> Unit) {
+    var title by rememberSaveable { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
+    var sending by androidx.compose.runtime.remember { mutableStateOf(false) }
+    var error by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
+    val canSend = !sending && com.lpecom.gemglasses.bobai.office.TipRules.valid(title, text)
+    AlertDialog(
+        onDismissRequest = { if (!sending) onDismiss() },
+        title = { Text("Share a tip") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it.take(com.lpecom.gemglasses.bobai.office.TipRules.TITLE_MAX) },
+                    label = { Text("Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it.take(com.lpecom.gemglasses.bobai.office.TipRules.TEXT_MAX) },
+                    label = { Text("Text") },
+                    minLines = 4,
+                    maxLines = 8,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSend,
+                onClick = {
+                    sending = true
+                    error = null
+                    vm.shareTip(title, text) { result ->
+                        sending = false
+                        when (result) {
+                            com.lpecom.gemglasses.bobai.office.TipResult.SENT -> {
+                                vm.message = "Sent to the office for review."
+                                onDismiss()
+                            }
+                            com.lpecom.gemglasses.bobai.office.TipResult.NOT_SENIOR ->
+                                error = "Only senior technicians can share tips."
+                            com.lpecom.gemglasses.bobai.office.TipResult.INVALID ->
+                                error = "Check the title and text, then try again."
+                            com.lpecom.gemglasses.bobai.office.TipResult.FAILED ->
+                                error = "Couldn't send. Check the connection and try again."
+                        }
+                    }
+                },
+            ) { Text(if (sending) "Sending…" else "Send", fontWeight = FontWeight.ExtraBold) }
+        },
+        dismissButton = { TextButton(enabled = !sending, onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DocCard(vm: BobAiViewModel, d: SourceDocument, onOpen: () -> Unit) {
@@ -1101,9 +1168,9 @@ private fun DocCard(vm: BobAiViewModel, d: SourceDocument, onOpen: () -> Unit) {
     SectionCard(
         title = d.title,
         accentTone = tone,
-        trailingHeader = { TechnicalBadge("REV", d.revision) },
+        trailingHeader = { if (!d.isTip) TechnicalBadge("REV", d.revision) },
     ) {
-        Text("Revision ${d.revision} · Applies to: ${d.applicableModels.joinToString()}")
+        Text(d.tipLine() ?: "Revision ${d.revision} · Applies to: ${d.applicableModels.joinToString()}")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             when (d.approvalStatus) {
                 ApprovalStatus.APPROVED -> StatusChip("Approved", Tone.OK)
@@ -1130,7 +1197,7 @@ fun DocumentScreen(vm: BobAiViewModel, nav: NavHostController, docId: String, in
     var page by rememberSaveable { mutableStateOf(initialPage) }
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(doc?.title ?: "Document", onBack = { nav.popBackStack() }) {
-            doc?.let {
+            doc?.takeIf { !it.isTip }?.let {
                 TechnicalBadge("REV", it.revision)
                 Spacer(Modifier.width(8.dp))
             }
@@ -1161,11 +1228,14 @@ private fun DocumentBody(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             TechnicalBadge("DOC-ID", doc.id.uppercase())
-            TechnicalBadge("REV", doc.revision)
-            TechnicalBadge("MODELS", doc.applicableModels.joinToString())
+            if (!doc.isTip) {
+                TechnicalBadge("REV", doc.revision)
+                TechnicalBadge("MODELS", doc.applicableModels.joinToString())
+            }
         }
         Text(
-            "Revision ${doc.revision} · ${doc.approvalStatus.name.lowercase()} · Applies to ${doc.applicableModels.joinToString()}",
+            doc.tipLine()?.let { "$it · ${doc.approvalStatus.name.lowercase()}" }
+                ?: "Revision ${doc.revision} · ${doc.approvalStatus.name.lowercase()} · Applies to ${doc.applicableModels.joinToString()}",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

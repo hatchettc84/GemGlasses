@@ -286,6 +286,10 @@ object BobLiveTools {
                     put("document", c.documentTitle)
                     put("revision", c.revision)
                     put("page", c.page)
+                    if (c.isTip) {
+                        put("kind", "tip")
+                        put("source", c.label())
+                    }
                 },
             )
         }

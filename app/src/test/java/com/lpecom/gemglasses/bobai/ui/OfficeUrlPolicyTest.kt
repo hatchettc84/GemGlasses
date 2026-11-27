@@ -3,6 +3,7 @@ package com.lpecom.gemglasses.bobai.ui
 import com.lpecom.gemglasses.bobai.ui.OfficeUrlPolicy.Decision.BLOCK
 import com.lpecom.gemglasses.bobai.ui.OfficeUrlPolicy.Decision.EXTERNAL
 import com.lpecom.gemglasses.bobai.ui.OfficeUrlPolicy.Decision.IN_WEBVIEW
+import com.lpecom.gemglasses.bobai.ui.OfficeUrlPolicy.Decision.OPEN_LIBRARY
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -68,5 +69,31 @@ class OfficeUrlPolicyTest {
         assertFalse(bad.isConfigured)
         assertEquals(EXTERNAL, bad.decide("http://localhost:8095/"))
         assertTrue(policy.isConfigured)
+    }
+
+    private val withAdmin = OfficeUrlPolicy("http://localhost:8095", "http://localhost:5173")
+
+    @Test fun adminOriginOpensTheLibrary() {
+        assertEquals(OPEN_LIBRARY, withAdmin.decide("http://localhost:5173"))
+        assertEquals(OPEN_LIBRARY, withAdmin.decide("http://localhost:5173/people"))
+        assertEquals(OPEN_LIBRARY, withAdmin.decide("http://127.0.0.1:5173/documents"))
+        assertEquals(IN_WEBVIEW, withAdmin.decide("http://localhost:8095/x"))
+    }
+
+    @Test fun adminLookalikesAndOtherPortsStayExternal() {
+        assertEquals(EXTERNAL, withAdmin.decide("http://localhost:5174/"))
+        assertEquals(EXTERNAL, withAdmin.decide("http://localhost.evil.com:5173/"))
+        assertEquals(EXTERNAL, withAdmin.decide("http://localhost:5173@evil.com/"))
+        assertEquals(EXTERNAL, withAdmin.decide("https://localhost:5173/"))
+        assertEquals(BLOCK, withAdmin.decide("javascript:alert(1)"))
+    }
+
+    @Test fun noAdminConfiguredMeansNoLibraryLink() {
+        assertEquals(EXTERNAL, policy.decide("http://localhost:5173/"))
+        assertEquals(EXTERNAL, OfficeUrlPolicy("http://localhost:8095", "").decide("http://localhost:5173/"))
+    }
+
+    @Test fun officeWinsWhenBothOriginsAreTheSame() {
+        assertEquals(IN_WEBVIEW, OfficeUrlPolicy("http://localhost:8095", "http://localhost:8095").decide("http://localhost:8095/"))
     }
 }

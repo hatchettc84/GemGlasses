@@ -67,6 +67,14 @@ class OfficeSyncTest {
         override suspend fun work(): OfficeWork { calls++; onCall(); return w }
         override suspend fun putSticky(sticky: com.lpecom.gemglasses.bobai.domain.Sticky) {}
         override suspend fun deleteSticky(id: String) {}
+        var senior = false
+        val tips = mutableListOf<Pair<String, String>>()
+        var tipFailure: Exception? = null
+        override suspend fun me() = com.lpecom.gemglasses.bobai.office.OfficeMe(senior)
+        override suspend fun postTip(title: String, text: String) {
+            tipFailure?.let { throw it }
+            tips += title to text
+        }
     }
 
     private fun api(vararg docs: SourceDocument) = FakeApi(served = docs.map { meta(it) to it }, w = work)
@@ -340,5 +348,94 @@ class OfficeSyncTest {
         )
         assertEquals("2026-01-01T00:00:00Z", w.jobs.single().dueAt)
         assertEquals("j", w.tasks.single().jobId)
+    }
+
+    // ---- expert tips ---------------------------------------------------------
+
+    private val tip = SourceDocument(
+        "tip-1", "tenant-1", "Reset the ZX-9 pressure switch", "tip-1", "tip", emptySet(), ApprovalStatus.APPROVED,
+        "office-approved", listOf(DocPage(1, "Tip", "Hold the pressure switch reset for ten seconds before relighting.")),
+        isMock = false, kind = "tip", author = "Sam Ortiz",
+    )
+
+    @Test fun `an approved tip reaches Bob and is cited as a tip from its author`() = runBlocking {
+        OfficeSync(api(doc1, tip), dir, controller("a")) { true }.syncNow()
+        val c = controller("tipcite")
+        OfficeSync(api(doc1, tip), dir, c) { true }.syncNow()
+        c.startOrResume()
+        c.confirmEquipment("ZX-9", "SN1")
+        val answer = c.knowledge.answer("pressure switch reset relighting", c.activeSession()!!.equipment)
+        val citation = (answer as com.lpecom.gemglasses.bobai.domain.EvidenceAnswer.Answer).citations.single()
+        assertTrue(citation.isTip)
+        assertTrue(citation.label().startsWith("a tip from Sam Ortiz"))
+        val json = BobLiveTools.answerJson(answer).toString()
+        assertTrue(json.contains("a tip from Sam Ortiz"))
+    }
+
+    @Test fun `a manual is still cited as a manual`() {
+        val c = com.lpecom.gemglasses.bobai.domain.EvidenceCitation("d", "ZX-9 Manual", "A", 2, "x")
+        assertEquals("ZX-9 Manual, rev A, page 2", c.label())
+        assertFalse(c.isTip)
+    }
+
+    @Test fun `tip mapping reads kind and author and old payloads default to a manual`() {
+        val j = Json { ignoreUnknownKeys = true }
+        val body = j.decodeFromString(
+            OfficeDocumentBody.serializer(),
+            """{"version":1,"sha256":"x","document":{"id":"t","tenantId":"t1","title":"T","family":"T","revision":"tip","applicableModels":[],"approvalStatus":"APPROVED","packId":null,"isMock":false,"kind":"tip","author":"Sam","pages":[]}}""",
+        )
+        assertTrue(body.document.isTip)
+        assertEquals("Tip · Sam", body.document.tipLine())
+        val old = j.decodeFromString(
+            SourceDocument.serializer(),
+            """{"id":"m","tenantId":"t1","title":"T","family":"T","revision":"A","applicableModels":["ZX-9"],"approvalStatus":"APPROVED","packId":null,"pages":[]}""",
+        )
+        assertFalse(old.isTip)
+        assertNull(old.tipLine())
+        val meta = j.decodeFromString(OfficeDocMeta.serializer(), """{"id":"t","tenantId":"t1","title":"T","revision":"tip","version":1,"sha256":"x","kind":"tip","author":"Sam"}""")
+        assertEquals("tip", meta.kind)
+    }
+
+    @Test fun `only a senior technician can send a tip`() = runBlocking {
+        val api = api(doc1)
+        val sync = OfficeSync(api, dir, controller("a")) { true }
+        assertEquals(com.lpecom.gemglasses.bobai.office.TipResult.NOT_SENIOR, sync.submitTip("Title", "Text"))
+        assertTrue(api.tips.isEmpty())
+        api.senior = true
+        sync.syncNow()
+        assertTrue(sync.senior)
+        assertEquals(com.lpecom.gemglasses.bobai.office.TipResult.SENT, sync.submitTip("  Title ", " Text  "))
+        assertEquals(listOf("Title" to "Text"), api.tips)
+        // demoted by the office: the next sync turns it off
+        api.senior = false
+        sync.syncNow()
+        assertFalse(sync.senior)
+    }
+
+    @Test fun `an unpaired phone is never senior and forget clears it`() = runBlocking {
+        val api = api(doc1).also { it.senior = true }
+        var paired = true
+        val sync = OfficeSync(api, dir, controller("a")) { paired }
+        sync.syncNow()
+        assertTrue(sync.senior)
+        paired = false
+        assertEquals(com.lpecom.gemglasses.bobai.office.TipResult.NOT_SENIOR, sync.submitTip("T", "x"))
+        sync.forget()
+        assertFalse(sync.senior)
+    }
+
+    @Test fun `tip validation and failures keep the text on the phone`() = runBlocking {
+        val api = api(doc1).also { it.senior = true }
+        val sync = OfficeSync(api, dir, controller("a")) { true }
+        sync.syncNow()
+        assertEquals(com.lpecom.gemglasses.bobai.office.TipResult.INVALID, sync.submitTip("   ", "x"))
+        assertEquals(com.lpecom.gemglasses.bobai.office.TipResult.INVALID, sync.submitTip("t".repeat(81), "x"))
+        assertEquals(com.lpecom.gemglasses.bobai.office.TipResult.INVALID, sync.submitTip("t", "x".repeat(4001)))
+        api.tipFailure = IOException("down")
+        assertEquals(com.lpecom.gemglasses.bobai.office.TipResult.FAILED, sync.submitTip("t", "x"))
+        api.tipFailure = com.lpecom.gemglasses.bobai.office.OfficeRejectedException(403)
+        assertEquals(com.lpecom.gemglasses.bobai.office.TipResult.NOT_SENIOR, sync.submitTip("t", "x"))
+        assertFalse(sync.senior)
+        assertTrue(api.tips.isEmpty())
     }
 }

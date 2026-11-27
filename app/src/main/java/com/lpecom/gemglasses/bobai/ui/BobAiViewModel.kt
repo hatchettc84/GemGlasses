@@ -233,6 +233,20 @@ class BobAiViewModel @Inject constructor(
     /** True when the last office sync succeeded. */
     val officeSynced: StateFlow<Boolean> = _officeSynced
 
+    private val _senior = MutableStateFlow(false)
+
+    /** True when the office says this phone's user is a senior technician: the Library shows "Share a tip". */
+    val senior: StateFlow<Boolean> = _senior
+
+    /** Sends a tip to the office for review. [onResult] runs on the main thread. */
+    fun shareTip(title: String, text: String, onResult: (com.lpecom.gemglasses.bobai.office.TipResult) -> Unit) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { officeSync.submitTip(title, text) }
+            _senior.value = officeSync.senior
+            onResult(result)
+        }
+    }
+
     private val officeMutex = kotlinx.coroutines.sync.Mutex()
 
     /** Pulls manuals and jobs from the office and updates [officeStatus]. Never throws. */
@@ -248,6 +262,7 @@ class BobAiViewModel @Inject constructor(
                         officeSync.syncNow()
                     }
                 }
+                _senior.value = officeSync.senior
                 _officeSynced.value = outcome is com.lpecom.gemglasses.bobai.office.SyncOutcome.Synced ||
                     outcome is com.lpecom.gemglasses.bobai.office.SyncOutcome.Partial
                 _officeStatus.value = when (outcome) {
@@ -313,6 +328,7 @@ class BobAiViewModel @Inject constructor(
                 // An unpaired phone keeps no office manuals or customer jobs.
                 officeMutex.withLock { officeSync.forget() }
             }
+            _senior.value = false
             pairingGeneration.incrementAndGet()
             _pairing.value = PairingUi(message = "This phone is unpaired. Your admin can also remove it in the console.")
         }

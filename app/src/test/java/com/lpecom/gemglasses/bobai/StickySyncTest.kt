@@ -45,6 +45,8 @@ class StickySyncTest {
             calls += "DELETE $id"
             failure(id)?.let { throw it }
         }
+        override suspend fun me() = com.lpecom.gemglasses.bobai.office.OfficeMe()
+        override suspend fun postTip(title: String, text: String) = error("unused")
     }
 
     private var n = 0

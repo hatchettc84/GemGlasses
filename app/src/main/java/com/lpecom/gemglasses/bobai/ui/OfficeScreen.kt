@@ -51,8 +51,14 @@ import com.lpecom.gemglasses.BuildConfig
  * does not lose the page, the sign-in, or the history. Created lazily the first
  * time the Office tab is opened. Never logs URLs or page content.
  */
-class OfficeWebHost(private val officeUrl: String = BuildConfig.BOBAI_OFFICE_URL) {
-    private val policy = OfficeUrlPolicy(officeUrl)
+class OfficeWebHost(
+    private val officeUrl: String = BuildConfig.BOBAI_OFFICE_URL,
+    adminUrl: String = BuildConfig.BOBAI_ADMIN_URL,
+) {
+    private val policy = OfficeUrlPolicy(officeUrl, adminUrl)
+
+    /** Set by the UI: a link to the admin app ("Phones & manuals") switches to the Library tab. */
+    var onOpenLibrary: () -> Unit = {}
 
     var webView: WebView? = null
         private set
@@ -88,7 +94,9 @@ class OfficeWebHost(private val officeUrl: String = BuildConfig.BOBAI_OFFICE_URL
             setSupportZoom(false)
             setGeolocationEnabled(false)
             javaScriptCanOpenWindowsAutomatically = false
-            setSupportMultipleWindows(false)
+            // Plane opens the admin link with target="_blank": receive those as new-window
+            // requests (onCreateWindow) and route them through the same policy.
+            setSupportMultipleWindows(true)
         }
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
@@ -98,6 +106,36 @@ class OfficeWebHost(private val officeUrl: String = BuildConfig.BOBAI_OFFICE_URL
         view.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(v: WebView, newProgress: Int) {
                 progress = newProgress / 100f
+            }
+
+            override fun onCreateWindow(
+                v: WebView,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message?,
+            ): Boolean {
+                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                // A throwaway WebView only learns the target URL; nothing is ever shown in it.
+                val probe = WebView(context)
+                probe.settings.javaScriptEnabled = false
+                probe.webViewClient = object : WebViewClient() {
+                    private var handled = false
+                    private fun route(url: String?) {
+                        if (handled) return
+                        handled = true
+                        probe.stopLoading()
+                        probe.post { probe.destroy() }
+                        handleNavigation(context, v, url, userInitiated = isUserGesture, newWindow = true)
+                    }
+                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                        route(request.url?.toString())
+                        return true
+                    }
+                    override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) = route(url)
+                }
+                transport.webView = probe
+                resultMsg.sendToTarget()
+                return true
             }
         }
         webView = view
@@ -144,14 +182,9 @@ class OfficeWebHost(private val officeUrl: String = BuildConfig.BOBAI_OFFICE_URL
     private inner class Client(private val context: Context) : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val url = request.url?.toString()
-            val decision = policy.decide(url)
-            if (decision == OfficeUrlPolicy.Decision.IN_WEBVIEW) return false
             // Sub-frame navigations nobody tapped are just dropped; never pop an app for them.
             val userInitiated = request.isForMainFrame || request.hasGesture()
-            if (decision == OfficeUrlPolicy.Decision.EXTERNAL && userInitiated && url != null) {
-                openExternally(url)
-            }
-            return true
+            return !handleNavigation(context, view, url, userInitiated, newWindow = false)
         }
 
         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
@@ -176,15 +209,40 @@ class OfficeWebHost(private val officeUrl: String = BuildConfig.BOBAI_OFFICE_URL
             }
         }
 
-        private fun openExternally(url: String) {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                .addCategory(Intent.CATEGORY_BROWSABLE)
-            if (context !is android.app.Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            try {
-                context.startActivity(intent)
-            } catch (_: ActivityNotFoundException) {
-                // No app can open it; stay on the office page.
+    }
+
+    /**
+     * Applies the URL policy to a navigation. Returns true when [view] should load the page itself
+     * (a normal navigation: let WebView proceed). For a new-window request the page is loaded
+     * into [view] here instead. Admin pages switch to the Library tab; other web links leave the app.
+     */
+    private fun handleNavigation(
+        context: Context,
+        view: WebView,
+        url: String?,
+        userInitiated: Boolean,
+        newWindow: Boolean,
+    ): Boolean {
+        when (policy.decide(url)) {
+            OfficeUrlPolicy.Decision.IN_WEBVIEW -> {
+                if (newWindow && url != null) view.loadUrl(url)
+                return true
             }
+            OfficeUrlPolicy.Decision.OPEN_LIBRARY -> if (userInitiated) onOpenLibrary()
+            OfficeUrlPolicy.Decision.EXTERNAL -> if (userInitiated && url != null) openExternally(context, url)
+            OfficeUrlPolicy.Decision.BLOCK -> Unit
+        }
+        return false
+    }
+
+    private fun openExternally(context: Context, url: String) {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            .addCategory(Intent.CATEGORY_BROWSABLE)
+        if (context !is android.app.Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            // No app can open it; stay on the office page.
         }
     }
 }

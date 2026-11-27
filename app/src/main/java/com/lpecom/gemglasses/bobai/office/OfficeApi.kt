@@ -45,6 +45,8 @@ data class OfficeDocMeta(
     val applicableModels: Set<String> = emptySet(),
     val version: Int,
     val sha256: String,
+    val kind: String = "manual",
+    val author: String? = null,
 ) {
     val cacheKey: String get() = "$version:$sha256"
 }
@@ -90,6 +92,10 @@ data class OfficeTaskRow(
 @Serializable
 data class OfficeWork(val jobs: List<OfficeJobRow>, val tasks: List<OfficeTaskRow>)
 
+/** GET /api/device/me: only what the phone needs. [senior] is false when the field is absent (old backend). */
+@Serializable
+data class OfficeMe(val senior: Boolean = false)
+
 /** Raised before any request is sent when this phone has no device key; device routes never use the app secret. */
 class NotPairedException : IOException("This phone is not paired with the office")
 
@@ -113,6 +119,15 @@ interface OfficeApi {
 
     /** Deletes a sticky from the office; idempotent. */
     suspend fun deleteSticky(id: String)
+
+    /** This phone's user, e.g. whether they are a senior technician. */
+    suspend fun me(): OfficeMe
+
+    /**
+     * Sends an expert tip to the office as a pending draft. [OfficeRejectedException] with 400
+     * (title or text invalid) or 403 (not a senior technician). Title and text are never logged.
+     */
+    suspend fun postTip(title: String, text: String)
 }
 
 /**
@@ -162,6 +177,31 @@ class HttpOfficeApi internal constructor(
     }
 
     override suspend fun deleteSticky(id: String) = write("DELETE", id, null)
+
+    override suspend fun me(): OfficeMe = get(listOf("me"), OfficeMe.serializer())
+
+    override suspend fun postTip(title: String, text: String) {
+        val body = buildJsonObject {
+            put("title", JsonPrimitive(title))
+            put("text", JsonPrimitive(text))
+        }.toString().toRequestBody("application/json".toMediaType())
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val url = (baseUrl.trimEnd('/') + "/api/device/").toHttpUrl().newBuilder()
+                .addPathSegment("tips").build()
+            val builder = Request.Builder().url(url).post(body)
+            val sent = auth.authorize(builder)
+            if (sent.deviceId == null) throw NotPairedException()
+            client.newCall(builder.build()).execute().use { response ->
+                val text2 = response.body?.string().orEmpty()
+                auth.checkResponse(sent, response.code, text2)
+                when {
+                    response.isSuccessful -> Unit
+                    response.code == 400 || response.code == 403 -> throw OfficeRejectedException(response.code)
+                    else -> throw IOException("Office sync failed (HTTP ${response.code})")
+                }
+            }
+        }
+    }
 
     /** PUT/DELETE of /api/device/stickies/:id. Only the status code is ever reported, never the body sent. */
     private suspend fun write(method: String, id: String, body: okhttp3.RequestBody?) {

@@ -21,6 +21,17 @@ sealed interface SyncOutcome {
     data class Failed(val message: String) : SyncOutcome
 }
 
+/** Outcome of sending an expert tip to the office. */
+enum class TipResult { SENT, NOT_SENIOR, INVALID, FAILED }
+
+/** Limits the office enforces on a tip (after trimming). Checked here too so a bad tip never leaves the phone. */
+object TipRules {
+    const val TITLE_MAX = 80
+    const val TEXT_MAX = 4000
+    fun valid(title: String, text: String): Boolean =
+        title.trim().length in 1..TITLE_MAX && text.trim().length in 1..TEXT_MAX
+}
+
 /**
  * Pulls approved manuals and assigned jobs from the office and hands them to Bob. The last good
  * copy is cached under [dir] so the phone works offline; a failed sync never discards it.
@@ -45,6 +56,11 @@ class OfficeSync(
     private val isPaired: () -> Boolean,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    /** True only when the office last said this phone's user is a senior technician. Never true when unpaired. */
+    @Volatile var senior: Boolean = false
+        private set
+
     private val knowledgeFile get() = File(dir, "knowledge.json")
     private val workFile get() = File(dir, "work.json")
 
@@ -64,7 +80,31 @@ class OfficeSync(
         if (clearStickyOutbox) runCatching { stickyOutbox?.clear() }
         knowledgeFile.delete()
         workFile.delete()
+        senior = false
         controller.clearOffice()
+    }
+
+    /**
+     * Sends a tip to the office for review (it arrives as a pending draft). Only a senior
+     * technician's phone may do this; a 403 also turns the local senior flag off. The text is
+     * never logged. Never throws except cancellation.
+     */
+    suspend fun submitTip(title: String, text: String): TipResult {
+        if (!isPaired() || !senior) return TipResult.NOT_SENIOR
+        if (!TipRules.valid(title, text)) return TipResult.INVALID
+        return try {
+            api.postTip(title.trim(), text.trim())
+            TipResult.SENT
+        } catch (e: OfficeRejectedException) {
+            if (e.code == 403) { senior = false; TipResult.NOT_SENIOR } else TipResult.INVALID
+        } catch (e: DeviceRemovedException) {
+            forget()
+            TipResult.FAILED
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            TipResult.FAILED
+        }
     }
 
     suspend fun syncNow(): SyncOutcome {
@@ -98,6 +138,17 @@ class OfficeSync(
                 throw e
             } catch (e: Exception) {
                 null // keep the cached jobs
+            }
+            try {
+                senior = api.me().senior
+            } catch (e: DeviceRemovedException) {
+                throw e
+            } catch (e: NotPairedException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // keep the last known value
             }
             if (work != null) {
                 write(workFile, json.encodeToString(OfficeWork.serializer(), work))

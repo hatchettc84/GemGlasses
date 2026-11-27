@@ -1,5 +1,6 @@
 package com.lpecom.gemglasses.bobai.live
 
+import com.lpecom.gemglasses.bobai.domain.Job
 import com.lpecom.gemglasses.bobai.domain.StickyKind
 
 sealed interface StickyArgsResult {
@@ -9,6 +10,18 @@ sealed interface StickyArgsResult {
 
 /** Validates the save_sticky arguments from the model. Pure, so it is unit tested. */
 object StickyArgs {
+    /**
+     * The office id of the job a sticky belongs to. A job title Bob named wins (matched against the
+     * office jobs, case-insensitively); with no title the active session's job is used. A named title
+     * that matches nothing gives null rather than guessing.
+     */
+    fun resolveJobId(jobTitle: String?, jobs: List<Job>, activeJobId: String?): String? {
+        val office = jobs.filter { it.officeId != null }
+        val named = jobTitle?.trim()?.takeIf { it.isNotEmpty() }
+        if (named != null) return office.firstOrNull { it.title.trim().equals(named, ignoreCase = true) }?.officeId
+        return office.firstOrNull { it.id == activeJobId }?.officeId
+    }
+
     fun parse(kind: String?, title: String?, text: String?, job: String?): StickyArgsResult {
         val k = when (kind?.trim()?.lowercase()) {
             "note" -> StickyKind.NOTE

@@ -56,4 +56,17 @@ class StickyToolTest {
         assertEquals("error", e["result"]!!.jsonPrimitive.content)
         assertEquals("bad", e["reason"]!!.jsonPrimitive.content)
     }
+
+    private fun job(id: String, title: String, officeId: String?) = com.lpecom.gemglasses.bobai.domain.Job(
+        id = id, tenantId = "t", site = "s", createdAt = 0, updatedAt = 0, title = title, officeId = officeId,
+    )
+
+    @Test fun `resolveJobId uses the named job else the active session job`() {
+        val jobs = listOf(job("l1", "Fix boiler", "plane:aaa"), job("l2", "Local only", null), job("l3", "Check pump", "plane:bbb"))
+        assertEquals("plane:bbb", StickyArgs.resolveJobId(" check PUMP ", jobs, "l1"))
+        assertEquals("plane:aaa", StickyArgs.resolveJobId(null, jobs, "l1"))
+        assertEquals(null, StickyArgs.resolveJobId("Unknown job", jobs, "l1"))
+        assertEquals(null, StickyArgs.resolveJobId(null, jobs, "l2"))
+        assertEquals(null, StickyArgs.resolveJobId(null, jobs, null))
+    }
 }

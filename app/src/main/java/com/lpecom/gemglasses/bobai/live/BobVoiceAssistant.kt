@@ -346,7 +346,10 @@ class BobVoiceAssistant @Inject constructor(
         return when (val a = StickyArgs.parse(arg("kind"), arg("title"), arg("text"), arg("job"))) {
             is StickyArgsResult.Error -> BobLiveTools.stickyErrorJson(a.reason)
             is StickyArgsResult.Ok -> {
-                val saved = stickies.add(a.kind, a.title, a.text, a.job)
+                val jobId = StickyArgs.resolveJobId(
+                    a.job, controller.state.value.jobs, controller.activeSession()?.jobId,
+                )
+                val saved = stickies.add(a.kind, a.title, a.text, a.job, jobId)
                 BobLiveTools.stickySavedJson(saved.title)
             }
         }

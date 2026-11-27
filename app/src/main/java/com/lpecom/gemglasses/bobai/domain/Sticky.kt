@@ -13,6 +13,8 @@ data class Sticky(
     val title: String,
     val text: String,
     val jobTitle: String? = null,
+    /** Office job id (e.g. "plane:<uuid>") the sticky belongs to; null when not tied to an office job. */
+    val jobId: String? = null,
     val createdAt: Long,
     val done: Boolean = false,
 )

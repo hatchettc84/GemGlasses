@@ -99,4 +99,16 @@ class StickyRepositoryTest {
         r.add(StickyKind.NOTE, "a", "a", null)
         assertEquals(1, repo(f).stickies.value.size)
     }
+
+    @Test fun `add keeps the job id and old files without it still load`() {
+        val f = file()
+        val r = repo(f)
+        val s = r.add(StickyKind.NOTE, "a", "a", "Fix boiler", "plane:abc")
+        assertEquals("plane:abc", s.jobId)
+        assertEquals("plane:abc", repo(f).stickies.value.single().jobId)
+        f.writeText("""{"schemaVersion":1,"stickies":[{"id":"old","kind":"NOTE","title":"t","text":"x","createdAt":5}]}""")
+        val old = repo(f).stickies.value.single()
+        assertEquals("old", old.id)
+        assertEquals(null, old.jobId)
+    }
 }

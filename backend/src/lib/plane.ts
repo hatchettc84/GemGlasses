@@ -1,7 +1,7 @@
 import type { Env } from "../env";
 import { ApiError } from "./errors";
 
-/** Read-only adapter for a self-hosted Plane instance (API v1). */
+/** Adapter for a self-hosted Plane instance (API v1): job reads, plus the write helpers the notes mirror uses. */
 export interface PlaneConfig {
   baseUrl: string;
   apiKey: string;
@@ -88,6 +88,53 @@ async function planeGet(cfg: PlaneConfig, path: string): Promise<unknown> {
   }
 }
 
+export interface PlaneResult {
+  status: number;
+  /** Parsed JSON body, or null when there is none / it is not JSON. */
+  data: unknown;
+}
+
+/**
+ * One write (or probe) against Plane that hands back the HTTP status instead of throwing on 4xx/5xx,
+ * so callers can treat 404/409 as answers. Throws plane_unavailable only when no response arrived
+ * (network error or the timeout). Logs method, path, status and duration only — never the key or body.
+ */
+export async function planeSend(
+  cfg: PlaneConfig,
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<PlaneResult> {
+  const url = `${cfg.baseUrl}/api/v1/workspaces/${encodeURIComponent(cfg.workspaceSlug)}/${path}`;
+  const where = path.split("?")[0];
+  const started = Date.now();
+  const headers: Record<string, string> = { "X-API-Key": cfg.apiKey, Accept: "application/json" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(PLANE_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const kind = e instanceof Error ? e.name : "unknown";
+    console.error(`plane ${method} failed: ${kind} after ${Date.now() - started} ms (${where})`);
+    throw unavailable();
+  }
+  const log = res.ok || res.status === 404 || res.status === 409 ? console.log : console.error;
+  log(`plane ${method} ${res.status} ${Date.now() - started} ms (${where})`);
+  let data: unknown = null;
+  try {
+    const text = await res.text();
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  return { status: res.status, data };
+}
+
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => v !== null && typeof v === "object" && !Array.isArray(v);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -102,7 +149,7 @@ function pageResults(body: unknown): Obj[] {
 }
 
 /** Reads every page (cap MAX_PAGES), following next_cursor while next_page_results is true. */
-async function planeList(cfg: PlaneConfig, path: string): Promise<Obj[]> {
+export async function planeList(cfg: PlaneConfig, path: string): Promise<Obj[]> {
   const out: Obj[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_PAGES; page++) {

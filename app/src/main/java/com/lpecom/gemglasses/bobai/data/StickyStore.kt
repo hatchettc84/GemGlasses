@@ -72,13 +72,14 @@ class StickyRepository(
         }
     }
 
-    fun add(kind: StickyKind, title: String, text: String, jobTitle: String?): Sticky = synchronized(lock) {
+    fun add(kind: StickyKind, title: String, text: String, jobTitle: String?, jobId: String? = null): Sticky = synchronized(lock) {
         val sticky = Sticky(
             id = newId(),
             kind = kind,
             title = title.trim().take(StickyLimits.MAX_TITLE),
             text = text.trim().take(StickyLimits.MAX_TEXT),
             jobTitle = jobTitle?.trim()?.takeIf { it.isNotEmpty() },
+            jobId = jobId?.trim()?.takeIf { it.isNotEmpty() },
             createdAt = clock(),
         )
         val list = (listOf(sticky) + _stickies.value).toMutableList()

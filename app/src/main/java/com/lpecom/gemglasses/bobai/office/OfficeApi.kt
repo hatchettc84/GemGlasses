@@ -154,6 +154,7 @@ class HttpOfficeApi internal constructor(
             put("title", JsonPrimitive(sticky.title))
             put("text", JsonPrimitive(sticky.text))
             put("jobTitle", sticky.jobTitle?.let { JsonPrimitive(it) } ?: JsonNull)
+            put("jobId", sticky.jobId?.let { JsonPrimitive(it) } ?: JsonNull)
             put("createdAt", JsonPrimitive(sticky.createdAt))
             put("done", JsonPrimitive(sticky.done))
         }.toString().toRequestBody("application/json".toMediaType())

@@ -6,6 +6,7 @@ import { nowIso } from "../lib/ids";
 import { jobSelect } from "./operations";
 import type { DocumentRow } from "./documents";
 import { fetchPlaneJobs, planeConfig, PLANE_ID_PREFIX } from "../lib/plane";
+import { mirrorStickies, runInBackground } from "../lib/plane-notes";
 
 const managedInPlane = () => new ApiError(409, "managed_in_plane", "This job is managed in Plane. Update it there.");
 export const fieldOperations = new Hono<AppEnv>();
@@ -13,6 +14,8 @@ fieldOperations.get("/jobs", async (c) => {
   const d = c.get("device");
   const plane = planeConfig(c.env);
   if (plane) {
+    // Retry this technician's stickies that have not reached Plane yet (after the response).
+    runInBackground(c, mirrorStickies(c.env, d.tenantId, d.userId));
     const u = await c.env.DB.prepare("SELECT email, name FROM users WHERE id=? AND tenant_id=?")
       .bind(d.userId, d.tenantId).first<{ email: string; name: string }>();
     if (!u) return c.json({ jobs: [], tasks: [] });

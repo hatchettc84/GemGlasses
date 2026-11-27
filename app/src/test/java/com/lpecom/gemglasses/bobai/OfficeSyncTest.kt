@@ -65,6 +65,8 @@ class OfficeSyncTest {
             return OfficeDocumentBody(m.version, m.sha256, d)
         }
         override suspend fun work(): OfficeWork { calls++; onCall(); return w }
+        override suspend fun putSticky(sticky: com.lpecom.gemglasses.bobai.domain.Sticky) {}
+        override suspend fun deleteSticky(id: String) {}
     }
 
     private fun api(vararg docs: SourceDocument) = FakeApi(served = docs.map { meta(it) to it }, w = work)

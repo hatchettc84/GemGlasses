@@ -40,6 +40,8 @@ class OfficeSync(
     private val api: OfficeApi,
     private val dir: File,
     private val controller: BobAiController,
+    private val stickyUploader: StickyUploader? = null,
+    private val stickyOutbox: com.lpecom.gemglasses.bobai.data.StickyOutbox? = null,
     private val isPaired: () -> Boolean,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -49,7 +51,8 @@ class OfficeSync(
     /** Applies the cached copy (if any) when this phone is paired. Call on launch, before any network. */
     fun loadCached() {
         if (!isPaired()) {
-            forget()
+            // Not paired (maybe never): drop office data, but keep queued stickies so they upload once paired.
+            forget(clearStickyOutbox = false)
             return
         }
         readCached(knowledgeFile, OfficeKnowledge.serializer())?.let(controller::applyOfficeKnowledge)
@@ -57,13 +60,27 @@ class OfficeSync(
     }
 
     /** Deletes the cached office data and clears it from Bob (phone removed or unpaired). */
-    fun forget() {
+    fun forget(clearStickyOutbox: Boolean = true) {
+        if (clearStickyOutbox) runCatching { stickyOutbox?.clear() }
         knowledgeFile.delete()
         workFile.delete()
         controller.clearOffice()
     }
 
     suspend fun syncNow(): SyncOutcome {
+        val outcome = syncOffice()
+        // Upload pending stickies last; a failure there never changes the outcome.
+        try {
+            stickyUploader?.flush()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // ignored: the outbox keeps the changes
+        }
+        return outcome
+    }
+
+    private suspend fun syncOffice(): SyncOutcome {
         if (!isPaired()) return SyncOutcome.NotPaired
         return try {
             val (knowledge, notUpdated) = fetchKnowledge()

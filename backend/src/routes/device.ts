@@ -5,6 +5,7 @@ import { ApiError, readJson } from "../lib/errors";
 import { auditStmt, auditStmtIfExists, SYSTEM_ACTOR } from "../lib/audit";
 import { nowIso, ulid } from "../lib/ids";
 import { fieldOperations } from "./field-operations";
+import { deviceStickies } from "./stickies";
 import { randomKey, sha256Hex } from "../lib/crypto";
 
 const FAILURE_WINDOW_MS = 10 * 60_000;
@@ -88,3 +89,4 @@ deviceApi.get("/me", async (c) => {
 });
 
 deviceApi.route("/", fieldOperations);
+deviceApi.route("/", deviceStickies);

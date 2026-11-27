@@ -2,13 +2,20 @@ package com.lpecom.gemglasses.bobai.office
 
 import com.lpecom.gemglasses.BuildConfig
 import com.lpecom.gemglasses.bobai.domain.SourceDocument
+import com.lpecom.gemglasses.bobai.domain.Sticky
+import com.lpecom.gemglasses.bobai.domain.StickyKind
 import com.lpecom.gemglasses.gemini.BackendAuth
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Request
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -89,6 +96,9 @@ class NotPairedException : IOException("This phone is not paired with the office
 /** The office answered 404: e.g. a document that was revoked after the manifest was read. */
 class OfficeNotFoundException(path: String) : IOException("Not found on the office server: $path")
 
+/** The office refused a write for good (HTTP 400 invalid or 409 too many); retrying the same request cannot help. */
+class OfficeRejectedException(val code: Int) : IOException("The office rejected the request (HTTP $code)")
+
 interface OfficeApi {
     /** The manifest of approved documents (no page text). */
     suspend fun knowledge(): OfficeKnowledgeIndex
@@ -97,6 +107,12 @@ interface OfficeApi {
     suspend fun knowledgeDocument(id: String): OfficeDocumentBody
 
     suspend fun work(): OfficeWork
+
+    /** Creates or replaces this technician's sticky in the office. [OfficeRejectedException] on 400/409. */
+    suspend fun putSticky(sticky: Sticky)
+
+    /** Deletes a sticky from the office; idempotent. */
+    suspend fun deleteSticky(id: String)
 }
 
 /**
@@ -131,6 +147,41 @@ class HttpOfficeApi internal constructor(
     }
 
     override suspend fun work(): OfficeWork = get(listOf("jobs"), OfficeWork.serializer())
+
+    override suspend fun putSticky(sticky: Sticky) {
+        val body = buildJsonObject {
+            put("kind", JsonPrimitive(if (sticky.kind == StickyKind.DRAFT) "draft" else "note"))
+            put("title", JsonPrimitive(sticky.title))
+            put("text", JsonPrimitive(sticky.text))
+            put("jobTitle", sticky.jobTitle?.let { JsonPrimitive(it) } ?: JsonNull)
+            put("createdAt", JsonPrimitive(sticky.createdAt))
+            put("done", JsonPrimitive(sticky.done))
+        }.toString().toRequestBody("application/json".toMediaType())
+        write("PUT", sticky.id, body)
+    }
+
+    override suspend fun deleteSticky(id: String) = write("DELETE", id, null)
+
+    /** PUT/DELETE of /api/device/stickies/:id. Only the status code is ever reported, never the body sent. */
+    private suspend fun write(method: String, id: String, body: okhttp3.RequestBody?) {
+        if (id.isEmpty() || id == "." || id == "..") throw OfficeRejectedException(400)
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val url = (baseUrl.trimEnd('/') + "/api/device/").toHttpUrl().newBuilder()
+                .addPathSegment("stickies").addPathSegment(id).build()
+            val builder = Request.Builder().url(url).method(method, body)
+            val sent = auth.authorize(builder)
+            if (sent.deviceId == null) throw NotPairedException()
+            client.newCall(builder.build()).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                auth.checkResponse(sent, response.code, text)
+                when {
+                    response.isSuccessful -> Unit
+                    response.code == 400 || response.code == 409 -> throw OfficeRejectedException(response.code)
+                    else -> throw IOException("Office sync failed (HTTP ${response.code})")
+                }
+            }
+        }
+    }
 
     private suspend fun <T> get(segments: List<String>, serializer: KSerializer<T>): T =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {

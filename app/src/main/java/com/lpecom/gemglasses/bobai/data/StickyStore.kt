@@ -57,10 +57,20 @@ class StickyRepository(
     private val clock: () -> Long = System::currentTimeMillis,
     private val newId: () -> String = { java.util.UUID.randomUUID().toString() },
     private val persist: (List<Sticky>) -> Unit = { store.save(it) },
+    private val outbox: StickyOutbox? = null,
+    /** Called after every change has been queued in [outbox]; used to start an upload. */
+    private val onChanged: () -> Unit = {},
 ) {
     private val lock = Any()
     private val _stickies = MutableStateFlow(store.load())
     val stickies: StateFlow<List<Sticky>> = _stickies.asStateFlow()
+
+    init {
+        // First run after the upgrade: queue every sticky that was saved before uploads existed.
+        if (outbox != null && !outbox.existedAtStart) {
+            outbox.enqueueAll(_stickies.value.map { it.id to StickyOp.UPSERT })
+        }
+    }
 
     fun add(kind: StickyKind, title: String, text: String, jobTitle: String?): Sticky = synchronized(lock) {
         val sticky = Sticky(
@@ -72,24 +82,31 @@ class StickyRepository(
             createdAt = clock(),
         )
         val list = (listOf(sticky) + _stickies.value).toMutableList()
+        val ops = mutableListOf<Pair<String, StickyOp>>()
         while (list.size > StickyLimits.MAX_STICKIES) {
             val i = list.indexOfLast { it.done }.takeIf { it >= 0 } ?: list.lastIndex
-            list.removeAt(i)
+            ops += list.removeAt(i).id to StickyOp.DELETE
         }
-        commit(list)
+        ops += sticky.id to StickyOp.UPSERT
+        commit(list, ops)
         sticky
     }
 
     fun setDone(id: String, done: Boolean) = synchronized(lock) {
-        commit(_stickies.value.map { if (it.id == id) it.copy(done = done) else it })
+        val changed = _stickies.value.any { it.id == id && it.done != done }
+        commit(_stickies.value.map { if (it.id == id) it.copy(done = done) else it }, if (changed) listOf(id to StickyOp.UPSERT) else emptyList())
     }
 
     fun delete(id: String) = synchronized(lock) {
-        commit(_stickies.value.filterNot { it.id == id })
+        commit(_stickies.value.filterNot { it.id == id }, listOf(id to StickyOp.DELETE))
     }
 
-    private fun commit(list: List<Sticky>) {
+    private fun commit(list: List<Sticky>, ops: List<Pair<String, StickyOp>>) {
         _stickies.value = list
         persist(list)
+        if (ops.isNotEmpty()) {
+            runCatching { outbox?.enqueueAll(ops) }
+            onChanged()
+        }
     }
 }

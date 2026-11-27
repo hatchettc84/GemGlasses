@@ -69,4 +69,34 @@ class HttpOfficeApiTest {
         }
         assertEquals(1, server.requestCount)
     }
+
+    @Test fun `putSticky sends the contract body and maps 400 and 409 to rejected`() = runBlocking {
+        val store = InMemoryDeviceKeyStore(DevicePairing("D1", "dev-key", "Tia"))
+        server.enqueue(MockResponse().setBody("""{"ok":true}"""))
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"too many stickies"}"""))
+        server.enqueue(MockResponse().setResponseCode(503))
+        val s = com.lpecom.gemglasses.bobai.domain.Sticky("id-1", com.lpecom.gemglasses.bobai.domain.StickyKind.DRAFT, "T", "Body", null, 1795658320970L, true)
+        api(store).putSticky(s)
+        val req = server.takeRequest()
+        assertEquals("PUT", req.method)
+        assertEquals("/api/device/stickies/id-1", req.path)
+        assertEquals("Bearer dev-key", req.getHeader("Authorization"))
+        val body = Json.parseToJsonElement(req.body.readUtf8()) as kotlinx.serialization.json.JsonObject
+        assertEquals("draft", (body["kind"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals("1795658320970", (body["createdAt"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals("true", (body["done"] as kotlinx.serialization.json.JsonPrimitive).content)
+        val e = runCatching { api(store).putSticky(s) }.exceptionOrNull()
+        assertEquals(409, (e as com.lpecom.gemglasses.bobai.office.OfficeRejectedException).code)
+        assertTrue(runCatching { api(store).putSticky(s) }.exceptionOrNull() is java.io.IOException)
+    }
+
+    @Test fun `deleteSticky sends DELETE and an unpaired phone sends nothing`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(204))
+        api(InMemoryDeviceKeyStore(DevicePairing("D1", "dev-key", "Tia"))).deleteSticky("id-1")
+        val req = server.takeRequest()
+        assertEquals("DELETE", req.method)
+        assertEquals("/api/device/stickies/id-1", req.path)
+        assertTrue(runCatching { api(InMemoryDeviceKeyStore()).deleteSticky("x") }.exceptionOrNull() is NotPairedException)
+        assertEquals(1, server.requestCount)
+    }
 }

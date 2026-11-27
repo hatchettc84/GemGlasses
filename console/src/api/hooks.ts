@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, apiUpload } from "./client";
-import type { Device, DocPages, DocStatus, Job, JobStatus, ManualDoc, Me, PairingCode, Role, Task, Technician, User } from "./types";
+import type { Device, DocPages, DocStatus, Job, JobStatus, ManualDoc, Me, PairingCode, Role, Sticky, StickyKind, Task, Technician, User } from "./types";
 
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => apiFetch<Me>("/me") });
 
@@ -111,3 +111,10 @@ export function useReviewDocument() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["documents"] }),
   });
 }
+
+export const useStickies = (enabled: boolean, kind?: StickyKind) =>
+  useQuery({
+    queryKey: ["stickies", kind ?? "all"],
+    queryFn: () => apiFetch<{ stickies: Sticky[] }>(kind ? `/stickies?kind=${kind}` : "/stickies"),
+    enabled,
+  });

@@ -18,6 +18,7 @@ import { integrations } from "./routes/integrations";
 import { operations } from "./routes/operations";
 import { documents } from "./routes/documents";
 import { deviceApi } from "./routes/device";
+import { adminStickies } from "./routes/stickies";
 import { legacyAuth, mintToken, searchPlaces } from "./legacy";
 
 const app = new Hono<AppEnv>();
@@ -34,6 +35,7 @@ app.route("/api/admin", adminDevices);
 app.route("/api/admin", integrations);
 app.route("/api/admin", operations);
 app.route("/api/admin", documents);
+app.route("/api/admin", adminStickies);
 app.route("/api/device", deviceApi);
 
 export default app;

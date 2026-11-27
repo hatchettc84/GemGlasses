@@ -41,3 +41,15 @@ export interface ManualDoc {
 }
 export interface DocPage { number: number; heading: string; body: string }
 export interface DocPages { id: string; title: string; revision: string; status: DocStatus; version: number; pages: DocPage[] }
+export type StickyKind = "note" | "draft";
+export interface Sticky {
+  id: string;
+  kind: StickyKind;
+  title: string;
+  text: string;
+  jobTitle: string | null;
+  createdAt: string;
+  done: boolean;
+  updatedAt: string;
+  technician: { id: string; name: string };
+}

@@ -383,8 +383,10 @@ class BobVoiceAssistant @Inject constructor(
                     else -> BobLiveTools.unknownTool(call.name)
                 }
             }.getOrElse { e ->
-                Log.e(TAG, "tool ${call.name} failed", e)
-                BobLiveTools.unknownTool(call.name)
+                // Exception type only: a message could carry the technician's words.
+                Log.e(TAG, "tool ${call.name} failed: ${e.javaClass.simpleName}")
+                // A failed save must not look like an unknown tool, or Bob may say it was saved.
+                if (call.name == BobLiveTools.SAVE_STICKY) BobLiveTools.stickyErrorJson("could not save") else BobLiveTools.unknownTool(call.name)
             }
             // Never log arguments: sticky titles and text are the technician's own words.
             Log.i(TAG, "tool ${call.name} -> ${result["status"] ?: result["result"]}")

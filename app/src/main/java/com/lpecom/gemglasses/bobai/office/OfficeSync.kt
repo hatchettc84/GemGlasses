@@ -12,8 +12,10 @@ sealed interface SyncOutcome {
     /**
      * The sync succeeded, but [notUpdated] listed manuals could not be downloaded (network error,
      * timeout or server error). Each one kept its cached copy if there was one, or was left out.
+     * [jobsNotUpdated]: the manuals updated but the jobs could not be fetched (e.g. Plane was
+     * slow), so the cached jobs were kept.
      */
-    data class Partial(val notUpdated: Int) : SyncOutcome
+    data class Partial(val notUpdated: Int, val jobsNotUpdated: Boolean = false) : SyncOutcome
     data object NotPaired : SyncOutcome
     data object Removed : SyncOutcome
     data class Failed(val message: String) : SyncOutcome
@@ -28,7 +30,8 @@ sealed interface SyncOutcome {
  * kept from the cache, and a cached document that is no longer in the manifest is dropped. That
  * is how a revocation reaches the phone. One document failing to download (anything but a 404)
  * does not fail the sync: its cached copy is kept, or it is skipped, and the outcome is
- * [SyncOutcome.Partial]. The manifest's drops always apply.
+ * [SyncOutcome.Partial]. The manifest's drops always apply. Manuals are applied before jobs are
+ * fetched, so a jobs failure keeps the cached jobs without holding back a manual update.
  *
  * A removed or unpaired phone keeps no office data: [forget] deletes the cache and clears Bob's
  * office manuals and jobs, and [loadCached] never applies a cache without a device key.
@@ -64,12 +67,30 @@ class OfficeSync(
         if (!isPaired()) return SyncOutcome.NotPaired
         return try {
             val (knowledge, notUpdated) = fetchKnowledge()
-            val work = api.work()
+            // Manuals first, on their own: a revocation must reach Bob even when the jobs
+            // source (e.g. Plane behind the Worker) is slow or down.
             write(knowledgeFile, json.encodeToString(OfficeKnowledge.serializer(), knowledge))
-            write(workFile, json.encodeToString(OfficeWork.serializer(), work))
             controller.applyOfficeKnowledge(knowledge)
-            controller.applyOfficeWork(work)
-            if (notUpdated == 0) SyncOutcome.Synced else SyncOutcome.Partial(notUpdated)
+            val work = try {
+                api.work()
+            } catch (e: DeviceRemovedException) {
+                throw e
+            } catch (e: NotPairedException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null // keep the cached jobs
+            }
+            if (work != null) {
+                write(workFile, json.encodeToString(OfficeWork.serializer(), work))
+                controller.applyOfficeWork(work)
+            }
+            when {
+                work == null -> SyncOutcome.Partial(notUpdated, jobsNotUpdated = true)
+                notUpdated == 0 -> SyncOutcome.Synced
+                else -> SyncOutcome.Partial(notUpdated)
+            }
         } catch (e: DeviceRemovedException) {
             forget()
             SyncOutcome.Removed

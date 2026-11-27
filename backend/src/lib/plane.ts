@@ -60,6 +60,9 @@ function unavailable(): ApiError {
 /** One GET against Plane. Logs status only (never the key or body). */
 async function planeGet(cfg: PlaneConfig, path: string): Promise<unknown> {
   const url = `${cfg.baseUrl}/api/v1/workspaces/${encodeURIComponent(cfg.workspaceSlug)}/${path}`;
+  // For logs: the path only (no query string, never the key or body).
+  const where = path.split("?")[0];
+  const started = Date.now();
   let res: Response;
   try {
     res = await fetch(url, {
@@ -67,14 +70,16 @@ async function planeGet(cfg: PlaneConfig, path: string): Promise<unknown> {
       // A stalled Plane must surface as plane_unavailable, not hang the phone's sync.
       signal: AbortSignal.timeout(PLANE_TIMEOUT_MS),
     });
-  } catch {
-    console.error("plane request failed: network error or timeout");
+  } catch (e) {
+    const kind = e instanceof Error ? e.name : "unknown";
+    console.error(`plane request failed: ${kind} after ${Date.now() - started} ms (${where})`);
     throw unavailable();
   }
   if (!res.ok) {
-    console.error(`plane request failed: status ${res.status}`);
+    console.error(`plane request failed: status ${res.status} (${where})`);
     throw unavailable();
   }
+  console.log(`plane ${res.status} ${Date.now() - started} ms (${where})`);
   try {
     return await res.json();
   } catch {

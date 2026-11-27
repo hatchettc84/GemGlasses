@@ -258,9 +258,14 @@ class BobAiViewModel @Inject constructor(
                         val jobs = s.jobs.count { it.officeId != null }
                         val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date())
                         val synced = "Office: synced $time · $manuals manuals · $jobs jobs"
-                        val notUpdated = (outcome as? com.lpecom.gemglasses.bobai.office.SyncOutcome.Partial)?.notUpdated ?: 0
-                        if (notUpdated == 0) synced
-                        else "$synced · $notUpdated ${if (notUpdated == 1) "manual" else "manuals"} not updated"
+                        val partial = outcome as? com.lpecom.gemglasses.bobai.office.SyncOutcome.Partial
+                        val notUpdated = partial?.notUpdated ?: 0
+                        buildString {
+                            append(synced)
+                            if (notUpdated > 0) append(" · $notUpdated ${if (notUpdated == 1) "manual" else "manuals"} not updated")
+                            // Jobs shown are the last ones received; the office's jobs source didn't answer.
+                            if (partial?.jobsNotUpdated == true) append(" · jobs not updated")
+                        }
                     }
                     is com.lpecom.gemglasses.bobai.office.SyncOutcome.NotPaired -> "Office: not paired"
                     is com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed -> "Office: this phone was removed. Ask your admin to pair it again."

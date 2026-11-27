@@ -265,6 +265,40 @@ class OfficeSyncTest {
         assertFalse(File(dir, "knowledge.json").exists())
     }
 
+    /** Like [api], but fetching jobs throws [error] (e.g. Plane timing out behind the Worker). */
+    private fun failingJobs(api: FakeApi, error: () -> Exception = { IOException("Office sync failed (HTTP 502)") }) =
+        object : OfficeApi by api {
+            override suspend fun work(): OfficeWork = throw error()
+        }
+
+    @Test fun `jobs failing still applies the manual update and keeps cached jobs`() = runBlocking {
+        val c = controller("a")
+        val api = api(doc1, doc2)
+        OfficeSync(api, dir, c) { true }.syncNow()
+        assertTrue(hasDoc(c, "doc-2"))
+        // The office revokes doc-2 while the jobs source is down.
+        api.served = api.served.filter { it.first.id != "doc-2" }
+        val out = OfficeSync(failingJobs(api), dir, c) { true }.syncNow()
+        assertEquals(SyncOutcome.Partial(notUpdated = 0, jobsNotUpdated = true), out)
+        assertFalse(hasDoc(c, "doc-2"))
+        assertNotNull(c.job("office-j1"))
+        // The revocation is in the cache too, so it survives a restart.
+        val c2 = controller("b")
+        OfficeSync(api, dir, c2) { true }.loadCached()
+        assertFalse(hasDoc(c2, "doc-2"))
+        assertNotNull(c2.job("office-j1"))
+    }
+
+    @Test fun `a removed phone while fetching jobs still forgets everything`() = runBlocking {
+        val c = controller("a")
+        val api = api(doc1)
+        OfficeSync(api, dir, c) { true }.syncNow()
+        val out = OfficeSync(failingJobs(api) { DeviceRemovedException() }, dir, c) { true }.syncNow()
+        assertEquals(SyncOutcome.Removed, out)
+        assertFalse(hasDoc(c))
+        assertNull(c.job("office-j1"))
+    }
+
     @Test fun `a failed sync keeps the last good data`() = runBlocking {
         val c = controller("a")
         val api = api(doc1)

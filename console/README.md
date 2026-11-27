@@ -1,7 +1,11 @@
-# BobAI Console
+# BobAI Admin
 
-Office web app for managing BobAI: people, phones, and (in later steps)
-manuals, reference packs, jobs, equipment and session review.
+Small admin page for what the BobAI office app has no place for: people and
+roles, phone pairing and removal, and manuals (upload, review, approve, revoke).
+Jobs and technicians' notes/drafts live in the BobAI office app (self-hosted
+Plane, rebranded; see `../plane-branding/`), whose sidebar links here as
+"Phones & manuals". `VITE_BOBAI_APP_URL` sets the "Open BobAI" link
+(default `http://127.0.0.1:8095`).
 
 ## Local development
 

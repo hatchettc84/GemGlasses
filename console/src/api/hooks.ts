@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, apiUpload } from "./client";
-import type { Device, DocPages, DocStatus, Job, JobStatus, ManualDoc, Me, PairingCode, Role, Sticky, StickyKind, Task, Technician, User } from "./types";
+import type { Device, DocPages, DocStatus, ManualDoc, Me, PairingCode, Role, User } from "./types";
 
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => apiFetch<Me>("/me") });
 
@@ -29,56 +29,6 @@ export function useRevokeDevice() {
   return useMutation({
     mutationFn: (deviceId: string) => apiFetch<{ device: Device }>(`/devices/${deviceId}/revoke`, { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["devices"] }),
-  });
-}
-
-export const useJobs = (enabled: boolean) =>
-  useQuery({ queryKey: ["jobs"], queryFn: () => apiFetch<{ jobs: Job[]; tasks: Task[] }>("/jobs"), enabled });
-
-export const useTeam = (enabled: boolean) =>
-  useQuery({ queryKey: ["team"], queryFn: () => apiFetch<{ technicians: Technician[] }>("/team"), enabled });
-
-export const usePlaneIntegration = (enabled: boolean) =>
-  useQuery({
-    queryKey: ["plane"],
-    queryFn: () => apiFetch<{ enabled: boolean; workspaceSlug: string | null; webUrl: string | null }>("/integrations/plane"),
-    enabled,
-    retry: false,
-  });
-
-export function useCreateJob() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: { title: string; site: string; description: string; assignedUserId: string; dueAt: string | null }) =>
-      apiFetch<{ job: Job }>("/jobs", { method: "POST", body: input }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
-  });
-}
-
-export function useUpdateJob() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, ...body }: { id: string; revision: number; status: JobStatus }) =>
-      apiFetch<{ job: Job }>(`/jobs/${id}`, { method: "PATCH", body }),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
-  });
-}
-
-export function useAddTask() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ jobId, title }: { jobId: string; title: string }) =>
-      apiFetch<{ id: string }>(`/jobs/${jobId}/tasks`, { method: "POST", body: { title } }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
-  });
-}
-
-export function useSetTaskDone() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, ...body }: { id: string; revision: number; completed: boolean }) =>
-      apiFetch<{ ok: true }>(`/tasks/${id}`, { method: "PATCH", body }),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
   });
 }
 
@@ -111,10 +61,3 @@ export function useReviewDocument() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["documents"] }),
   });
 }
-
-export const useStickies = (enabled: boolean, kind?: StickyKind) =>
-  useQuery({
-    queryKey: ["stickies", kind ?? "all"],
-    queryFn: () => apiFetch<{ stickies: Sticky[] }>(kind ? `/stickies?kind=${kind}` : "/stickies"),
-    enabled,
-  });

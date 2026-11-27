@@ -30,7 +30,8 @@ h1, h2 { font-weight: 800; letter-spacing: -0.2px; }
 .shell header a { color: var(--on-surface-variant); text-decoration: none; font-weight: 600; }
 .shell header a.active { color: var(--primary); font-weight: 800; }
 .shell header nav { display: flex; gap: 20px; }
-/* Toggle buttons (e.g. the Notes filter): only the selected one is filled. */
+.shell header a.app-link { margin-left: auto; color: var(--primary); font-weight: 700; }
+/* Toggle buttons: only the selected one (aria-pressed="true") is filled. */
 button[aria-pressed="false"] { background: transparent; color: var(--on-surface); border-color: var(--surface-variant); }
 main { padding: 24px; max-width: 1100px; }
 .muted { color: var(--on-surface-variant); }

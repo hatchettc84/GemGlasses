@@ -16,6 +16,15 @@ interface WorkModePlatform {
     fun startListenService(): Boolean
 
     fun stopListenService()
+
+    /**
+     * Whether the technician left Work Mode on. Only their choice is kept, not
+     * the armed state, so after Android closes the app [WorkModeCore.recheck]
+     * arms again for real instead of showing a stale "armed".
+     */
+    fun rememberedOn(): Boolean = false
+
+    fun rememberOn(on: Boolean) {}
 }
 
 /** The Gemini Live voice session, as far as Work Mode cares. */
@@ -55,11 +64,13 @@ class WorkModeCore(
 
     /** Call from the user's tap, after the RECORD_AUDIO request has been answered. */
     fun enable() {
+        platform.rememberOn(true)
         dispatch(WorkEvent.Enable)
         arm()
     }
 
     fun disable() {
+        platform.rememberOn(false)
         val s = _state.value
         val wakeSession = s.phase == WorkPhase.WAKE_DETECTED ||
             (s.phase == WorkPhase.ACTIVE && s.trigger == ActivationTrigger.WAKE_WORD)
@@ -96,10 +107,17 @@ class WorkModeCore(
         if (_state.value.phase == WorkPhase.IDLE_TIMEOUT) arm()
     }
 
-    /** Re-check permission and route when the app returns to the foreground. */
+    /**
+     * Re-check permission and route when the app returns to the foreground.
+     * Also turns Work Mode back on if Android closed the app while it was on
+     * (the app is in the foreground here, so the mic service may start).
+     */
     fun recheck() {
         val s = _state.value
-        if (!s.workModeOn) return
+        if (!s.workModeOn) {
+            if (platform.rememberedOn() && platform.hasMicPermission()) enable()
+            return
+        }
         if (!platform.hasMicPermission()) {
             engine.stop()
             dispatch(WorkEvent.ResourceLost(NO_PERMISSION))

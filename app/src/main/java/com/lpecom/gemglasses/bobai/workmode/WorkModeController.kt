@@ -32,7 +32,9 @@ import javax.inject.Singleton
  * The decisions live in [WorkModeCore] so they are JVM tested.
  *
  * Work Mode state is in memory only, so it never survives process death — a
- * killed app can't leave a stale "armed" indicator behind.
+ * killed app can't leave a stale "armed" indicator behind. Only the
+ * technician's on/off choice is saved: when the app comes back to the
+ * foreground after Android closed it, [recheck] arms "Hey Bob" again for real.
  */
 @Singleton
 class WorkModeController @Inject constructor(
@@ -40,6 +42,8 @@ class WorkModeController @Inject constructor(
     private val engine: WakeWordEngine,
     voiceProvider: Provider<BobVoiceAssistant>,
 ) {
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
     private val core = WorkModeCore(
         engine = engine,
         platform = object : WorkModePlatform {
@@ -47,6 +51,8 @@ class WorkModeController @Inject constructor(
             override fun probeRoute() = this@WorkModeController.probeRoute()
             override fun startListenService() = WakeListenService.start(context)
             override fun stopListenService() = WakeListenService.stop(context)
+            override fun rememberedOn() = prefs.getBoolean(KEY_ON, false)
+            override fun rememberOn(on: Boolean) = prefs.edit().putBoolean(KEY_ON, on).apply()
         },
         voice = object : VoiceLink {
             override val active get() = voiceProvider.get().state.value.active
@@ -113,5 +119,7 @@ class WorkModeController @Inject constructor(
     companion object {
         const val NO_PERMISSION = WorkModeCore.NO_PERMISSION
         private const val TAG = "WorkMode"
+        private const val PREFS = "bobai_work_mode"
+        private const val KEY_ON = "on"
     }
 }

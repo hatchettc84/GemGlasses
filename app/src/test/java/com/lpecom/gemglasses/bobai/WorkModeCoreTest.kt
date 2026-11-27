@@ -49,6 +49,10 @@ class WorkModeCoreTest {
         var mic = true
         var serviceUp = false
         var serviceStarts = 0
+        /** Survives a "process death": tests build a new core on the same platform. */
+        var remembered = false
+        override fun rememberedOn() = remembered
+        override fun rememberOn(on: Boolean) { remembered = on }
         override fun hasMicPermission() = mic
         override fun probeRoute() = MicRoute(RouteKind.PHONE)
         override fun startListenService(): Boolean { serviceStarts++; serviceUp = true; return true }
@@ -72,6 +76,48 @@ class WorkModeCoreTest {
         assertEquals(WorkPhase.WAKE_DETECTED, core.state.value.phase)
         core.acknowledge()
         voice.active = true
+    }
+
+    /** Android kills the process: its service goes too, and a new core starts DISABLED with the same storage. */
+    private fun processDeath(newEngine: FakeEngine): WorkModeCore {
+        platform.serviceUp = false
+        return WorkModeCore(newEngine, platform, voice)
+    }
+
+    @Test fun `enable and disable remember the technician's choice`() {
+        core.enable()
+        assertTrue(platform.remembered)
+        core.disable()
+        assertFalse(platform.remembered)
+    }
+
+    @Test fun `after the app is closed, coming back re-arms Hey Bob if it was left on`() {
+        core.enable()
+        val restarted = processDeath(FakeEngine())
+        assertEquals(WorkPhase.DISABLED, restarted.state.value.phase)
+        restarted.recheck()
+        assertTrue(restarted.state.value.heyBobArmed)
+        assertTrue(platform.serviceUp)
+    }
+
+    @Test fun `coming back leaves Hey Bob off if the technician turned it off`() {
+        core.enable()
+        core.disable()
+        val restarted = processDeath(FakeEngine())
+        restarted.recheck()
+        assertEquals(WorkPhase.DISABLED, restarted.state.value.phase)
+        assertFalse(platform.serviceUp)
+    }
+
+    @Test fun `restore without microphone permission does not listen`() {
+        core.enable()
+        platform.mic = false
+        val restartedEngine = FakeEngine()
+        val restarted = processDeath(restartedEngine)
+        restarted.recheck()
+        assertFalse(restartedEngine.running)
+        assertFalse(restarted.state.value.heyBobArmed)
+        assertFalse(platform.serviceUp)
     }
 
     @Test fun `enable arms the engine and then starts the listening service`() {

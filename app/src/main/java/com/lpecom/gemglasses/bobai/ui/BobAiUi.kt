@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
@@ -638,6 +639,7 @@ fun BrandProfileSelector(modifier: Modifier = Modifier) {
 object Routes {
     const val HOME = "home"
     const val JOBS = "jobs"
+    const val OFFICE = "office"
     const val NOTES = "notes"
     const val LIBRARY = "library"
     const val SETTINGS = "settings"
@@ -650,9 +652,10 @@ object Routes {
     fun summary(id: String) = "summary/$id"
 }
 
-private enum class TopTab(val route: String, val label: String, val icon: ImageVector) {
+internal enum class TopTab(val route: String, val label: String, val icon: ImageVector) {
     HOME(Routes.HOME, "Home", Icons.Filled.Home),
     JOBS(Routes.JOBS, "Jobs", Icons.Filled.Work),
+    OFFICE(Routes.OFFICE, "Office", Icons.Filled.Business),
     NOTES(Routes.NOTES, "Notes", Icons.Filled.Edit),
     LIBRARY(Routes.LIBRARY, "Library", Icons.AutoMirrored.Filled.MenuBook),
     SETTINGS(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
@@ -673,6 +676,9 @@ fun BobAiRoot(legacyContent: @Composable () -> Unit) {
     val route = backStack?.destination?.route
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    // One Office WebView for the whole BobAI UI, so switching tabs keeps the page and sign-in.
+    val officeHost = remember { OfficeWebHost() }
+    androidx.compose.runtime.DisposableEffect(officeHost) { onDispose { officeHost.destroy() } }
 
     LaunchedEffect(vm.message) {
         vm.message?.let { snackbar.showSnackbar(it); vm.message = null }
@@ -746,15 +752,18 @@ fun BobAiRoot(legacyContent: @Composable () -> Unit) {
                                         NavigationBarItem(
                                             selected = route == t.route,
                                             onClick = { nav.goTop(t.route) },
-                                            icon = { Icon(t.icon, contentDescription = null) },
-                                            // Five tabs on a narrow cover screen: keep each label on one line.
+                                            icon = { Icon(t.icon, contentDescription = null, modifier = Modifier.size(22.dp)) },
+                                            // Six tabs on the ~360dp Fold cover screen: keep each label on one
+                                            // line at a slightly smaller, untracked label size.
                                             label = {
                                                 Text(
                                                     t.label,
                                                     fontWeight = FontWeight.Bold,
                                                     maxLines = 1,
                                                     softWrap = false,
-                                                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                                    overflow = TextOverflow.Clip,
+                                                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall
+                                                        .copy(fontSize = 10.sp, letterSpacing = 0.sp),
                                                 )
                                             },
                                             colors = NavigationBarItemDefaults.colors(
@@ -773,6 +782,7 @@ fun BobAiRoot(legacyContent: @Composable () -> Unit) {
                         NavHost(nav, startDestination = Routes.HOME) {
                             composable(Routes.HOME) { HomeScreen(vm, nav) }
                             composable(Routes.JOBS) { JobsScreen(vm, nav) }
+                            composable(Routes.OFFICE) { OfficeScreen(officeHost) }
                             composable(Routes.NOTES) { NotesScreen(vm) }
                             composable(Routes.LIBRARY) { LibraryScreen(vm, nav) }
                             composable(Routes.SETTINGS) { SettingsScreen(vm, nav) }

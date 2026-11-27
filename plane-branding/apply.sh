@@ -82,6 +82,10 @@ for app in web admin; do
     perl -0pi -e 's|(\n\t# SPA fallback)|\n\t# BobAI: always revalidate pages; hashed assets never change.\n\t\@bobai_assets path /assets/* /god-mode/assets/*\n\theader \@bobai_assets Cache-Control "public, max-age=31536000, immutable"\n\theader \@bobai_pages Cache-Control "no-cache"\n\t\@bobai_pages not path /assets/* /god-mode/assets/*\n$1|' "$cf"
     grep -q "bobai_assets" "$cf" || { echo "apply.sh: WARNING could not patch $cf" >&2; missing=$((missing + 1)); }
   fi
+  # Plane's per-address limit of 300 static requests a minute is hit by a single first load of
+  # the app (it lazily loads hundreds of chunks), and all users behind one address share it.
+  # Hashed assets are now cached for good, so a higher ceiling costs little.
+  perl -pi -e 's/^(\s*events) 300$/$1 3000/' "$cf"
   echo "   apps/$app/caddy/Caddyfile"
 done
 

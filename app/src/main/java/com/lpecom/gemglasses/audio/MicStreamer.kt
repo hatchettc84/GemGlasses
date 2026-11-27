@@ -40,7 +40,8 @@ class MicStreamer @Inject constructor() {
     /**
      * @param detectDeadRoute when true, the flow fails with
      *   [DeadAudioRouteException] if the input stays at exact zero for ~3 s
-     *   (e.g. a Bluetooth SCO link that never carried audio).
+     *   before any real audio arrives (a Bluetooth SCO link that never carried
+     *   audio). Silence after real audio is a quiet room and never trips it.
      */
     fun stream(detectDeadRoute: Boolean = false): Flow<ByteArray> = callbackFlow {
         val record = AudioRecord(

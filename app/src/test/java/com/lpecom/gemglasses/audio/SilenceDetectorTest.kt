@@ -15,13 +15,19 @@ class SilenceDetectorTest {
         assertTrue(d.isDead(zeros))
     }
 
-    @Test fun `any non-zero sample resets the run`() {
+    @Test fun `once real audio has arrived, later silence never trips`() {
+        // Seen on RB Meta glasses: the mic works, then sends exact zeros
+        // whenever nobody is talking. That's a quiet room, not a dead route.
         val d = SilenceDetector(3)
         d.isDead(zeros); d.isDead(zeros)
         assertFalse(d.isDead(quietNoise))
-        assertFalse(d.isDead(zeros))
-        assertFalse(d.isDead(zeros))
-        assertTrue(d.isDead(zeros))
+        repeat(10) { assertFalse(d.isDead(zeros)) }
+    }
+
+    @Test fun `audio during the grace period also proves the route works`() {
+        val d = SilenceDetector(2, graceChunks = 3)
+        d.isDead(zeros); d.isDead(quietNoise); d.isDead(zeros)
+        repeat(5) { assertFalse(d.isDead(zeros)) }
     }
 
     @Test fun `silence during the start-up grace period never counts`() {

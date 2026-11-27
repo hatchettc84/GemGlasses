@@ -747,7 +747,16 @@ fun BobAiRoot(legacyContent: @Composable () -> Unit) {
                                             selected = route == t.route,
                                             onClick = { nav.goTop(t.route) },
                                             icon = { Icon(t.icon, contentDescription = null) },
-                                            label = { Text(t.label, fontWeight = FontWeight.Bold) },
+                                            // Five tabs on a narrow cover screen: keep each label on one line.
+                                            label = {
+                                                Text(
+                                                    t.label,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                                                )
+                                            },
                                             colors = NavigationBarItemDefaults.colors(
                                                 selectedIconColor = MaterialTheme.colorScheme.onPrimary,
                                                 selectedTextColor = MaterialTheme.colorScheme.primary,

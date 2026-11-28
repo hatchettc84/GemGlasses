@@ -89,6 +89,8 @@ class BobVoiceAssistant @Inject constructor(
     private val controller: BobAiController,
     private val stickies: StickyRepository,
     private val legacyAgent: AgentController,
+    private val network: NetworkCheck,
+    private val noticeSpeaker: NoticeSpeaker,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var liveViewJob: Job? = null
@@ -333,6 +335,13 @@ class BobVoiceAssistant @Inject constructor(
                         // and keep the message so the UI explains why and start() works again later.
                         stop()
                         _state.update { it.copy(lastError = event.error.message) }
+                    } else if (OfflineNotice.shouldAnnounce(event.error, network.online())) {
+                        // No internet: retrying can't help, and silence looks like "Bob isn't
+                        // listening". End the session (Hey Bob re-arms), then say why on the phone.
+                        Log.w(TAG, "no internet on the phone: ending the session and telling the technician")
+                        stop()
+                        _state.update { it.copy(lastError = OfflineNotice.SCREEN) }
+                        noticeSpeaker.speak(OfflineNotice.SPOKEN)
                     } else {
                         _state.update { it.copy(status = VoiceStatus.RECONNECTING, lastError = describe(event.error)) }
                     }

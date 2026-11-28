@@ -148,4 +148,47 @@ class BobAiControllerOfficeTest {
         assertTrue(c.job("office-b") != null)
         assertTrue(c.job("job-mock-sample") != null)
     }
+
+    private val demoPacks = setOf("pack-abc", "pack-xyz", "pack-hvac-general", "pack-legacy")
+
+    @Test fun `an unpaired phone shows the demo packs and manuals`() {
+        val c = controller()
+        assertFalse(c.officeActive())
+        assertTrue(c.state.value.packs.map { it.id }.containsAll(demoPacks))
+        assertTrue(c.knowledge.allDocuments().any { it.isMock })
+        assertTrue(c.resolver.isKnownModel("XYZ-900"))
+    }
+
+    @Test fun `pairing hides the demo packs, manuals and models`() {
+        val c = controller()
+        c.applyOfficeKnowledge(knowledge())
+        assertTrue(c.officeActive())
+        assertEquals(listOf("office-approved"), c.state.value.packs.map { it.id })
+        assertTrue(c.knowledge.allDocuments().none { it.isMock })
+        assertFalse(c.resolver.isKnownModel("XYZ-900"))
+        // A second sync keeps exactly one office pack and no demo packs.
+        c.applyOfficeKnowledge(knowledge())
+        assertEquals(listOf("office-approved"), c.state.value.packs.map { it.id })
+    }
+
+    @Test fun `Bob never answers from demo manuals on a paired phone`() {
+        val c = controller()
+        val base = knowledge()
+        // The office also covers a demo model; only the office manual may be cited for it.
+        c.applyOfficeKnowledge(base.copy(documents = base.documents.map { it.copy(applicableModels = setOf("ABC-123")) }))
+        c.startOrResume()
+        val r = c.confirmEquipment("ABC-123", "SN1") as EquipmentResolver.Confirmation.Confirmed
+        assertEquals("tenant-1", r.equipment.tenantId)
+        assertTrue(c.knowledge.applicableDocuments(r.equipment).all { it.id == "doc-zx9" })
+        assertEquals(EvidenceAnswer.NoEvidence, c.knowledge.answer("igniter resistance ohms", r.equipment))
+    }
+
+    @Test fun `unpairing brings the demo packs back`() {
+        val c = controller()
+        c.applyOfficeKnowledge(knowledge())
+        c.clearOffice()
+        assertFalse(c.officeActive())
+        assertEquals(demoPacks, c.state.value.packs.map { it.id }.toSet())
+        assertTrue(c.knowledge.allDocuments().any { it.isMock })
+    }
 }

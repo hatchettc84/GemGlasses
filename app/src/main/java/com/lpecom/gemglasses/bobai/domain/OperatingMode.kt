@@ -38,9 +38,8 @@ object ModeResolver {
             networkAvailable -> ModeStatus(
                 mode = OperatingMode.CONNECTED,
                 available = (if (refs) referenceFeatures else emptyList()) +
-                    "Existing Gemini Live voice assistant (Settings → Live voice)",
-                unavailable = listOf("BobAI cloud knowledge service — not built yet (Phase 2)") +
-                    if (!refs) listOf("Offline references — no pack downloaded") else emptyList(),
+                    "Talk to Bob (Gemini Live) — on the Assistant screen",
+                unavailable = if (!refs) listOf("Offline references — no pack downloaded") else emptyList(),
             )
 
             localModelValidated && refs -> ModeStatus(

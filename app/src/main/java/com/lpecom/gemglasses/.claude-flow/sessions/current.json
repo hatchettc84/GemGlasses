@@ -1,0 +1,13 @@
+{
+  "id": "session-1795022184688",
+  "startedAt": "2026-11-18T17:16:24.688Z",
+  "cwd": "/Volumes/My Passport/Bob.AI/GemGlasses/app/src/main/java/com/lpecom/gemglasses",
+  "context": {},
+  "metrics": {
+    "edits": 10,
+    "commands": 0,
+    "tasks": 0,
+    "errors": 0
+  },
+  "restoredAt": "2026-11-20T17:11:23.660Z"
+}

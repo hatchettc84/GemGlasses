@@ -17,7 +17,10 @@ import javax.inject.Singleton
 @Singleton
 class SpeakerSink @Inject constructor() {
 
-    private var track: AudioTrack? = null
+    @Volatile private var track: AudioTrack? = null
+
+    /** Frames written since the track's playback head was last reset (open or flush). */
+    private val framesWritten = java.util.concurrent.atomic.AtomicLong()
 
     private val minBuffer = AudioTrack.getMinBufferSize(
         AudioSpec.OUTPUT_SAMPLE_RATE,
@@ -45,13 +48,26 @@ class SpeakerSink @Inject constructor() {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
             .also { it.play() }
+        framesWritten.set(0)
         Log.i(TAG, "speaker opened")
     }
 
     /** Queues a chunk of assistant audio for playback. */
     fun write(pcm: ByteArray) {
         val t = track ?: return
-        t.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+        val written = t.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+        if (written > 0) framesWritten.addAndGet((written / BYTES_PER_FRAME).toLong())
+    }
+
+    /**
+     * Milliseconds of written audio that has not played yet (0 when closed). Used to end a
+     * session only after Bob's goodbye has actually been heard.
+     */
+    fun pendingPlaybackMs(): Long {
+        val t = track ?: return 0
+        val head = runCatching { t.playbackHeadPosition.toLong() and 0xFFFFFFFFL }.getOrNull() ?: return 0
+        val queued = (framesWritten.get() - head).coerceAtLeast(0)
+        return queued * 1000 / AudioSpec.OUTPUT_SAMPLE_RATE
     }
 
     /** Barge-in: drop everything queued so the assistant goes silent at once. */
@@ -59,6 +75,7 @@ class SpeakerSink @Inject constructor() {
         val t = track ?: return
         t.pause()
         t.flush()
+        framesWritten.set(0) // flush resets the playback head
         t.play()
     }
 
@@ -68,9 +85,11 @@ class SpeakerSink @Inject constructor() {
             it.release()
         }
         track = null
+        framesWritten.set(0)
     }
 
     private companion object {
         const val TAG = "SpeakerSink"
+        const val BYTES_PER_FRAME = 2 // 16-bit mono
     }
 }

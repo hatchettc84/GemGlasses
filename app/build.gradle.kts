@@ -37,8 +37,13 @@ android {
 
         // Injected into BuildConfig + manifest placeholders instead of hardcoding.
         buildConfigField("String", "BACKEND_URL", "\"${secret("GEMGLASSES_BACKEND_URL", "http://10.0.2.2:8787")}\"")
+        // Office web app (BobAI on self-hosted Plane) shown in the Office tab.
+        buildConfigField("String", "BOBAI_OFFICE_URL", "\"${secret("GEMGLASSES_OFFICE_URL", "http://localhost:8095")}\"")
+        buildConfigField("String", "BOBAI_ADMIN_URL", "\"${secret("GEMGLASSES_ADMIN_URL", "http://localhost:5173")}\"")
         buildConfigField("String", "APP_SECRET", "\"${secret("GEMGLASSES_APP_SECRET", "dev-secret")}\"")
         buildConfigField("boolean", "USE_REAL_GLASSES", useRealGlasses.toString())
+        // True only when a token service address was set explicitly (Gemini Live for BobAI).
+        buildConfigField("boolean", "LIVE_BACKEND_CONFIGURED", secret("GEMGLASSES_BACKEND_URL").isNotBlank().toString())
 
         manifestPlaceholders["metaApplicationId"] = secret("META_APPLICATION_ID", "0")
         manifestPlaceholders["metaClientToken"] = secret("META_CLIENT_TOKEN", "0")
@@ -113,6 +118,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.play.services.location)
     implementation(libs.androidx.datastore.preferences)
+    // On-device LLM for the offline AI spike (model file is pushed separately).
+    implementation(libs.litertlm.android)
 
     // Real Meta DAT SDK (Maven Central, no token needed) only linked when the flag is on.
     if (useRealGlasses) {
@@ -124,4 +131,5 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    testImplementation(libs.okhttp.mockwebserver)
 }

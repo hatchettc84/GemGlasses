@@ -59,6 +59,69 @@ object AppModule {
         })
     }
 
+    /** Bob's saved notes and drafts: one local JSON file, written off the main thread. Changes are queued in an outbox and uploaded to the office. */
+    @Provides
+    @Singleton
+    fun stickyRepository(
+        @ApplicationContext context: Context,
+        outbox: com.lpecom.gemglasses.bobai.data.StickyOutbox,
+        uploader: com.lpecom.gemglasses.bobai.office.StickyUploader,
+    ): com.lpecom.gemglasses.bobai.data.StickyRepository {
+        val store = com.lpecom.gemglasses.bobai.data.StickyStore(File(context.filesDir, "bobai/stickies.json"))
+        val writer = Executors.newSingleThreadExecutor()
+        return com.lpecom.gemglasses.bobai.data.StickyRepository(
+            store,
+            persist = { list ->
+                writer.execute {
+                    runCatching { store.save(list) }.onFailure { Log.e("BobAI", "Saving stickies failed", it) }
+                }
+            },
+            outbox = outbox,
+            onChanged = uploader::requestFlush,
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun stickyOutbox(@ApplicationContext context: Context): com.lpecom.gemglasses.bobai.data.StickyOutbox =
+        com.lpecom.gemglasses.bobai.data.StickyOutbox(File(context.filesDir, "bobai/sticky_outbox.json"))
+
+    /** Uploads queued sticky changes. Reads the repository lazily: the repository itself triggers it. */
+    @Provides
+    @Singleton
+    fun stickyUploader(
+        outbox: com.lpecom.gemglasses.bobai.data.StickyOutbox,
+        api: com.lpecom.gemglasses.bobai.office.OfficeApi,
+        repository: dagger.Lazy<com.lpecom.gemglasses.bobai.data.StickyRepository>,
+        keyStore: com.lpecom.gemglasses.bobai.sync.DeviceKeyStore,
+    ): com.lpecom.gemglasses.bobai.office.StickyUploader = com.lpecom.gemglasses.bobai.office.StickyUploader(
+        outbox, api,
+        stickies = { repository.get().stickies.value },
+        isPaired = { keyStore.get() != null },
+        scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO),
+        log = { Log.w("BobAI", it) },
+    )
+
+    /** Downloads approved manuals and assigned jobs for Bob; caches them under files/bobai/office. */
+    @Provides
+    @Singleton
+    fun officeSync(
+        @ApplicationContext context: Context,
+        api: com.lpecom.gemglasses.bobai.office.OfficeApi,
+        controller: BobAiController,
+        keyStore: com.lpecom.gemglasses.bobai.sync.DeviceKeyStore,
+        uploader: com.lpecom.gemglasses.bobai.office.StickyUploader,
+        outbox: com.lpecom.gemglasses.bobai.data.StickyOutbox,
+    ): com.lpecom.gemglasses.bobai.office.OfficeSync = com.lpecom.gemglasses.bobai.office.OfficeSync(
+        api, File(context.filesDir, "bobai/office"), controller, uploader, outbox,
+    ) { keyStore.get() != null }
+
+    /** "Hey Bob": Android's on-device speech recognizer, never the cloud one. */
+    @Provides
+    @Singleton
+    fun wakeWordEngine(@ApplicationContext context: Context): com.lpecom.gemglasses.bobai.workmode.WakeWordEngine =
+        com.lpecom.gemglasses.bobai.workmode.SpeechWakeWordEngine(context)
+
     /**
      * Selects the glasses backend at runtime. The real Meta DAT backend is
      * loaded reflectively so `src/main` never references the SDK — that keeps
@@ -83,4 +146,10 @@ object AppModule {
 abstract class BindsModule {
     @Binds
     abstract fun visionController(bridge: VisionBridge): VisionController
+
+    @Binds
+    abstract fun officeApi(impl: com.lpecom.gemglasses.bobai.office.HttpOfficeApi): com.lpecom.gemglasses.bobai.office.OfficeApi
+
+    @Binds
+    abstract fun deviceKeyStore(impl: com.lpecom.gemglasses.bobai.sync.KeystoreDeviceKeyStore): com.lpecom.gemglasses.bobai.sync.DeviceKeyStore
 }

@@ -16,7 +16,7 @@ data class EquipmentCandidate(
  * [candidatesFromLabel] without changing the confirmation contract.
  */
 class EquipmentResolver(
-    private val knownModels: Map<String, String>,
+    private val knownModels: () -> Map<String, String>,
 ) {
 
     fun candidatesFromLabel(labelText: String): List<EquipmentCandidate> {
@@ -33,7 +33,10 @@ class EquipmentResolver(
 
     fun normalizeModel(input: String): String = input.trim().uppercase().replace(Regex("\\s+"), "-")
 
-    fun isKnownModel(model: String): Boolean = normalizeModel(model) in knownModels
+    fun isKnownModel(model: String): Boolean = normalizeModel(model) in knownModels()
+
+    /** Display name for a known model (mock or office), or null when unknown. */
+    fun knownName(model: String): String? = knownModels()[normalizeModel(model)]
 
     sealed interface Confirmation {
         data class Confirmed(val equipment: Equipment) : Confirmation
@@ -56,7 +59,7 @@ class EquipmentResolver(
             Equipment(
                 id = id,
                 tenantId = tenantId,
-                manufacturer = knownModels[normalized],
+                manufacturer = knownModels()[normalized],
                 model = normalized,
                 serial = serial.trim().uppercase(),
                 confirmationStatus = ConfirmationStatus.CONFIRMED,

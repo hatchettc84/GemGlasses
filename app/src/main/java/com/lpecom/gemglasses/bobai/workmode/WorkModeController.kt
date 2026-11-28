@@ -9,93 +9,85 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.flow.MutableStateFlow
+import com.lpecom.gemglasses.bobai.live.BobVoiceAssistant
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 /**
  * Runs the Work Mode state machine on the phone.
  *
- * Today no custom wake-word engine is installed ([NoWakeWordEngine]), so
- * enabling Work Mode always ends in UNAVAILABLE with manual "Start
- * assistance" as the way in. No microphone is opened and no foreground
- * service is started here: there is nothing to listen with yet, and Android
- * only allows microphone use in the background from a running
- * microphone-type foreground service. That service is added together with a
- * real engine.
+ * "Hey Bob" listens with [engine] (Android's on-device speech recognizer in
+ * the app, see [SpeechWakeWordEngine]). While Work Mode is on,
+ * [WakeListenService] — a microphone foreground service started from the
+ * enable tap — keeps listening possible with the screen locked.
+ *
+ * Microphone hand-off: the detector and the Gemini Live session never hold
+ * the microphone together. On a wake, [WakeHandoff] stops the engine
+ * synchronously (on the main thread) before WakeDetected is dispatched, and
+ * [WakeSessionCoordinator] (process-scoped) starts the voice session. A manual
+ * start stops the engine the same way. The engine is only started again by
+ * [endAssistance], and [WorkModeCore] refuses to start it while voice is on.
+ * The decisions live in [WorkModeCore] so they are JVM tested.
  *
  * Work Mode state is in memory only, so it never survives process death — a
- * killed app can't leave a stale "armed" indicator behind.
+ * killed app can't leave a stale "armed" indicator behind. Only the
+ * technician's on/off choice is saved: when the app comes back to the
+ * foreground after Android closed it, [recheck] arms "Hey Bob" again for real.
  */
 @Singleton
 class WorkModeController @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val engine: WakeWordEngine,
+    voiceProvider: Provider<BobVoiceAssistant>,
 ) {
-    private val engine: WakeWordEngine = NoWakeWordEngine
-    private val _state = MutableStateFlow(WorkModeState())
-    val state: StateFlow<WorkModeState> = _state.asStateFlow()
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    private val core = WorkModeCore(
+        engine = engine,
+        platform = object : WorkModePlatform {
+            override fun hasMicPermission() = this@WorkModeController.hasMicPermission()
+            override fun probeRoute() = this@WorkModeController.probeRoute()
+            override fun startListenService() = WakeListenService.start(context)
+            override fun stopListenService() = WakeListenService.stop(context)
+            override fun rememberedOn() = prefs.getBoolean(KEY_ON, false)
+            override fun rememberOn(on: Boolean) = prefs.edit().putBoolean(KEY_ON, on).apply()
+        },
+        voice = object : VoiceLink {
+            override val active get() = voiceProvider.get().state.value.active
+            override fun stop() = voiceProvider.get().stop()
+        },
+        log = { Log.i(TAG, it) },
+    )
+
+    val state: StateFlow<WorkModeState> = core.state
 
     val engineName: String get() = engine.displayName
 
     fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    /** Call after the RECORD_AUDIO request has been answered. */
-    fun enable() {
-        dispatch(WorkEvent.Enable)
-        arm()
-    }
+    /** Call from the user's tap, after the RECORD_AUDIO request has been answered. */
+    fun enable() = core.enable()
 
-    fun disable() {
-        engine.stop()
-        dispatch(WorkEvent.Disable)
-    }
+    /** Also ends a voice session the wake word started, which relied on Work Mode's service. */
+    fun disable() = core.disable()
 
-    /** Manual fallback; always available while Work Mode is on. */
-    fun startAssistance(): Boolean {
-        dispatch(WorkEvent.ManualActivate)
-        return _state.value.isActive
-    }
+    /** Manual fallback; always available while Work Mode is on. Frees the microphone first. */
+    fun startAssistance(): Boolean = core.startAssistance()
 
-    fun endAssistance() {
-        dispatch(WorkEvent.SessionEnded)
-        if (_state.value.phase == WorkPhase.IDLE_TIMEOUT) arm()
-    }
+    /** Bob is answering the wake word: WAKE_DETECTED -> ACTIVE. */
+    fun acknowledge() = core.acknowledge()
+
+    /** Call only once the voice session is off, so Bob's own voice can't wake the detector. */
+    fun endAssistance() = core.endAssistance()
+
+    /** A wake-word session ended for inactivity (voice already off): re-arm. */
+    fun idleTimeout() = core.idleTimeout()
 
     /** Re-check permission and route when the app returns to the foreground. */
-    fun recheck() {
-        val s = _state.value
-        if (!s.workModeOn) return
-        if (!hasMicPermission()) {
-            engine.stop()
-            dispatch(WorkEvent.ResourceLost(NO_PERMISSION))
-        } else if (s.phase == WorkPhase.UNAVAILABLE && s.unavailableReason == NO_PERMISSION) {
-            dispatch(WorkEvent.Disable)
-            enable()
-        } else if (s.phase == WorkPhase.UNAVAILABLE) {
-            // Refresh the reported route without changing anything else.
-            _state.update { it.copy(route = probeRoute()) }
-        }
-    }
-
-    private fun arm() {
-        if (!hasMicPermission()) {
-            dispatch(WorkEvent.EngineFailed(NO_PERMISSION))
-            return
-        }
-        val route = probeRoute()
-        if (route.kind == RouteKind.NONE) {
-            dispatch(WorkEvent.EngineFailed("No microphone is available", route))
-            return
-        }
-        when (val r = engine.start(route) { dispatch(WorkEvent.WakeDetected) }) {
-            EngineStart.Started -> dispatch(WorkEvent.EngineReady(route))
-            is EngineStart.Failed -> dispatch(WorkEvent.EngineFailed(r.reason, route))
-        }
-    }
+    fun recheck() = core.recheck()
 
     /**
      * Which microphone audio would come from, without opening it. A Bluetooth
@@ -124,13 +116,10 @@ class WorkModeController @Inject constructor(
         type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
             (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && type == AudioDeviceInfo.TYPE_BLE_HEADSET)
 
-    private fun dispatch(e: WorkEvent) {
-        _state.update { WorkModeMachine.reduce(it, e) }
-        Log.i(TAG, "$e -> ${_state.value.phase}")
-    }
-
     companion object {
-        const val NO_PERMISSION = "Microphone permission not granted"
+        const val NO_PERMISSION = WorkModeCore.NO_PERMISSION
         private const val TAG = "WorkMode"
+        private const val PREFS = "bobai_work_mode"
+        private const val KEY_ON = "on"
     }
 }

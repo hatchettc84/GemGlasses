@@ -69,7 +69,7 @@ class WorkModeMachineTest {
     }
 
     @Test fun `no engine means unavailable with manual fallback, never armed`() {
-        val result = NoWakeWordEngine.start(GLASSES) {}
+        val result = NoWakeWordEngine.start(GLASSES, onWake = {})
         assertTrue(result is EngineStart.Failed)
         val s = run(WorkEvent.Enable, WorkEvent.EngineFailed((result as EngineStart.Failed).reason, GLASSES))
         assertEquals(WorkPhase.UNAVAILABLE, s.phase)

@@ -24,17 +24,31 @@ class BluetoothAudioRouter @Inject constructor(
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var active = false
 
+    /** True while communication audio is pointed at a Bluetooth device. */
+    val routedToBluetooth: Boolean get() = active
+
     /** Points communication audio at the glasses (or best Bluetooth device). */
     fun routeToGlasses() {
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val target = audioManager.availableCommunicationDevices.firstOrNull { it.isBluetooth() }
-            if (target != null && audioManager.setCommunicationDevice(target)) {
+            if (target == null) {
+                // No headset to route to: leave the phone out of call mode.
+                // Call mode with no SCO device made the glasses' Bluetooth link
+                // drop whenever the camera stream started (seen on the Fold7),
+                // so live view got no frames while voice was on. The mic and
+                // speaker still request voice processing via their own
+                // VOICE_COMMUNICATION source/usage.
+                Log.w(TAG, "no Bluetooth communication device found; staying in normal audio mode")
+                return
+            }
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (audioManager.setCommunicationDevice(target)) {
                 Log.i(TAG, "communication device set to ${target.productName}")
             } else {
-                Log.w(TAG, "no Bluetooth communication device found; using default")
+                Log.w(TAG, "could not set communication device ${target.productName}")
             }
         } else {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             @Suppress("DEPRECATION")
             audioManager.startBluetoothSco()
             @Suppress("DEPRECATION")

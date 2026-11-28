@@ -37,7 +37,13 @@ class MicStreamer @Inject constructor() {
     /** Cold flow of mic chunks. Recording starts on collect, stops on cancel. */
     @SuppressLint("MissingPermission")
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    fun stream(): Flow<ByteArray> = callbackFlow {
+    /**
+     * @param detectDeadRoute when true, the flow fails with
+     *   [DeadAudioRouteException] if the input stays at exact zero for ~3 s
+     *   before any real audio arrives (a Bluetooth SCO link that never carried
+     *   audio). Silence after real audio is a quiet room and never trips it.
+     */
+    fun stream(detectDeadRoute: Boolean = false): Flow<ByteArray> = callbackFlow {
         val record = AudioRecord(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             AudioSpec.INPUT_SAMPLE_RATE,
@@ -52,9 +58,16 @@ class MicStreamer @Inject constructor() {
 
         val worker = thread(name = "mic-streamer") {
             val buf = ByteArray(AudioSpec.INPUT_CHUNK_BYTES)
+            // ~3 s of perfect digital silence = the routed device delivers nothing.
+            val detector = if (detectDeadRoute) SilenceDetector(DEAD_ROUTE_CHUNKS, DEAD_ROUTE_GRACE_CHUNKS) else null
             while (running.get()) {
                 val read = record.read(buf, 0, buf.size)
                 if (read > 0) {
+                    if (detector?.isDead(buf, read) == true) {
+                        Log.w(TAG, "mic delivered only zeros for ~3 s; audio route is dead")
+                        close(DeadAudioRouteException())
+                        break
+                    }
                     trySend(if (read == buf.size) buf.copyOf() else buf.copyOf(read))
                 }
             }
@@ -71,5 +84,12 @@ class MicStreamer @Inject constructor() {
 
     private companion object {
         const val TAG = "MicStreamer"
+        // INPUT_CHUNK_BYTES is ~20 ms of audio, so 150 chunks is ~3 s.
+        const val DEAD_ROUTE_CHUNKS = 150
+        /** ~5 s at 20 ms chunks: seen on the Fold7, SCO to the glasses can take over 3 s to deliver audio. */
+        const val DEAD_ROUTE_GRACE_CHUNKS = 250
     }
 }
+
+/** The routed input device delivered only digital silence. */
+class DeadAudioRouteException : IllegalStateException("audio input route delivered only silence")

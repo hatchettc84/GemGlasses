@@ -1,8 +1,8 @@
 package com.lpecom.gemglasses.bobai.live
 
 /*
- * Live assistance building blocks (addendum §5). Pure Kotlin; the provider
- * connection is not built yet. These keep the three data paths separate:
+ * Live assistance building blocks (addendum §5). Pure Kotlin; the Gemini Live
+ * connection is BobVoiceAssistant. These keep the three data paths separate:
  * glasses frames reaching the phone, selected frames reaching an AI
  * provider, and recording (off by default).
  */
@@ -108,10 +108,10 @@ object AssistanceModes {
         when {
             !f.bobAiVoiceProviderWired -> ModeAvailability(
                 AssistanceMode.VOICE, false,
-                "Not wired into BobAI yet. The separate Gemini Live screen is under Settings → Live voice.",
+                "Gemini Live needs a token service. Set GEMGLASSES_BACKEND_URL for this build.",
             )
             !f.online -> ModeAvailability(AssistanceMode.VOICE, false, "Needs internet")
-            else -> ModeAvailability(AssistanceMode.VOICE, true, "Camera stays off")
+            else -> ModeAvailability(AssistanceMode.VOICE, true, "Gemini Live. Your voice goes to Google while it's on; camera stays off")
         },
         if (f.glassesConnected) {
             ModeAvailability(
@@ -124,11 +124,14 @@ object AssistanceModes {
         when {
             !f.liveViewProviderWired -> ModeAvailability(
                 AssistanceMode.GUIDED_LIVE_VIEW, false,
-                "Not built yet — needs a tested AI provider connection",
+                "Gemini Live needs a token service. Set GEMGLASSES_BACKEND_URL for this build.",
             )
             !f.online -> ModeAvailability(AssistanceMode.GUIDED_LIVE_VIEW, false, "Needs internet")
             !f.glassesConnected -> ModeAvailability(AssistanceMode.GUIDED_LIVE_VIEW, false, "Glasses not connected")
-            else -> ModeAvailability(AssistanceMode.GUIDED_LIVE_VIEW, true, "Started and stopped by you")
+            else -> ModeAvailability(
+                AssistanceMode.GUIDED_LIVE_VIEW, true,
+                "Started and stopped by you; about 1 frame/s to Google Gemini for up to 60 s",
+            )
         },
         if (f.localModelValidated && f.usableReferencePacks > 0) {
             ModeAvailability(AssistanceMode.OFFLINE_ASSISTED, true, "Validated local model")

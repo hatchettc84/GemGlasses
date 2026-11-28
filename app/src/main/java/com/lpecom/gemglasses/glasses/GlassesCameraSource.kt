@@ -1,6 +1,7 @@
 package com.lpecom.gemglasses.glasses
 
 import android.util.Log
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.withTimeoutOrNull
@@ -28,13 +29,25 @@ class GlassesCameraSource @Inject constructor(
         onFrame: (ByteArray) -> Unit,
     ): Int {
         var count = 0
+        val deadline = System.currentTimeMillis() + maxDurationMs
         withTimeoutOrNull(maxDurationMs) {
-            backend.cameraFrames()
-                .take(maxFrames)
-                .collectFrames { frame ->
-                    onFrame(frame)
-                    count++
-                }
+            var attempt = 0
+            while (true) {
+                attempt++
+                backend.cameraFrames()
+                    .take(maxFrames - count)
+                    .collectFrames { frame ->
+                        onFrame(frame)
+                        count++
+                    }
+                // The first stream after the glasses have been idle often ends
+                // at once with a "critical error" and no frames; a second
+                // attempt normally works. Retry once, only if nothing arrived.
+                val timeLeft = deadline - System.currentTimeMillis()
+                if (count > 0 || attempt > RETRIES || timeLeft < RETRY_DELAY_MS * 2) break
+                Log.i(TAG, "camera stream ended with no frames; retrying in ${RETRY_DELAY_MS}ms")
+                delay(RETRY_DELAY_MS)
+            }
         }
         Log.i(TAG, "vision burst finished after $count frame(s)")
         return count
@@ -47,5 +60,7 @@ class GlassesCameraSource @Inject constructor(
         const val TAG = "GlassesCameraSource"
         // ~1 fps over a 20s cap => ~20 frames; cap slightly above to be safe.
         const val DEFAULT_MAX_FRAMES = 24
+        const val RETRIES = 1
+        const val RETRY_DELAY_MS = 1_500L
     }
 }

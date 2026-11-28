@@ -48,6 +48,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +57,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -68,6 +70,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -75,6 +78,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.lpecom.gemglasses.BuildConfig
 import com.lpecom.gemglasses.bobai.data.MockContent
+import com.lpecom.gemglasses.bobai.live.MediaStatus
+import com.lpecom.gemglasses.bobai.live.VoiceStatus
 import com.lpecom.gemglasses.bobai.workmode.ActivationTrigger
 import com.lpecom.gemglasses.bobai.workmode.WorkModeState
 import com.lpecom.gemglasses.bobai.workmode.WorkPhase
@@ -157,6 +162,7 @@ fun HomeScreen(vm: BobAiViewModel, nav: NavHostController) {
                 )
             }
         }
+        SetupCard(vm, nav)
         WorkModeCard(vm, onStartAssistance = { start() })
         SectionCard(
             title = "Current job",
@@ -230,7 +236,16 @@ fun HomeScreen(vm: BobAiViewModel, nav: NavHostController) {
                     if (usablePacks > 0) "References ready ($usablePacks pack${if (usablePacks == 1) "" else "s"})" else "No usable references",
                     if (usablePacks > 0) Tone.OK else Tone.BAD,
                 )
-                StatusChip("Offline AI not configured", Tone.NEUTRAL)
+                val off by vm.offline.state.collectAsStateWithLifecycle()
+                StatusChip(
+                    off.status.label,
+                    when (off.status) {
+                        com.lpecom.gemglasses.bobai.offline.ModelStatus.READY -> Tone.OK
+                        com.lpecom.gemglasses.bobai.offline.ModelStatus.FAILED,
+                        com.lpecom.gemglasses.bobai.offline.ModelStatus.SELF_TEST_FAILED -> Tone.BAD
+                        else -> Tone.NEUTRAL
+                    },
+                )
             }
             mode.unavailable.forEach {
                 Text(
@@ -405,8 +420,9 @@ fun EquipmentScreen(vm: BobAiViewModel, nav: NavHostController) {
                 if (model.isNotBlank()) {
                     val known = vm.controller.resolver.isKnownModel(model)
                     val normalized = vm.controller.resolver.normalizeModel(model)
+                    val knownName = vm.controller.resolver.knownName(model)
                     StatusChip(
-                        if (known) "Known model: ${MockContent.knownModels[normalized]}"
+                        if (known) "Known model: $knownName"
                         else "Unknown model — no approved manual. Reference-only or escalate.",
                         if (known) Tone.OK else Tone.WARN,
                     )
@@ -415,7 +431,7 @@ fun EquipmentScreen(vm: BobAiViewModel, nav: NavHostController) {
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            TechnicalBadge("OEM", MockContent.knownModels[normalized] ?: "—")
+                            TechnicalBadge("OEM", knownName ?: "—")
                             TechnicalBadge("SKU/CAT", "MRO-${normalized}")
                             TechnicalBadge("VOLTAGE", "120V 60Hz")
                         }
@@ -581,6 +597,8 @@ private fun WorkflowPane(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item { BobVoiceCard(vm) }
+        item { OfflineAskCard(vm) }
         item {
             SectionCard(
                 title = "Equipment",
@@ -1025,6 +1043,9 @@ fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
     val c = vm.controller
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(0) }
+    val senior by vm.senior.collectAsStateWithLifecycle()
+    var shareOpen by rememberSaveable { mutableStateOf(false) }
+    if (shareOpen && senior) ShareTipDialog(vm, onDismiss = { shareOpen = false })
     val equipment = c.activeSession()?.equipment
     val applicable = equipment?.let { c.knowledge.applicableDocuments(it).map { d -> d.id }.toSet() } ?: emptySet()
     val terms = com.lpecom.gemglasses.bobai.domain.KnowledgeRepository.tokenize(query)
@@ -1044,10 +1065,15 @@ fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
             Spacer(Modifier.width(8.dp))
         }
         ScrollPage {
+            if (senior) {
+                Button(onClick = { shareOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Share a tip", fontWeight = FontWeight.ExtraBold)
+                }
+            }
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                label = { Text("Search manuals") },
+                label = { Text("Search manuals and tips") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1071,6 +1097,65 @@ fun LibraryScreen(vm: BobAiViewModel, nav: NavHostController) {
     }
 }
 
+/** Two fields, Send. Kept text stays on failure. Only reachable for senior technicians. */
+@Composable
+private fun ShareTipDialog(vm: BobAiViewModel, onDismiss: () -> Unit) {
+    var title by rememberSaveable { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
+    var sending by androidx.compose.runtime.remember { mutableStateOf(false) }
+    var error by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
+    val canSend = !sending && com.lpecom.gemglasses.bobai.office.TipRules.valid(title, text)
+    AlertDialog(
+        onDismissRequest = { if (!sending) onDismiss() },
+        title = { Text("Share a tip") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it.take(com.lpecom.gemglasses.bobai.office.TipRules.TITLE_MAX) },
+                    label = { Text("Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it.take(com.lpecom.gemglasses.bobai.office.TipRules.TEXT_MAX) },
+                    label = { Text("Text") },
+                    minLines = 4,
+                    maxLines = 8,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSend,
+                onClick = {
+                    sending = true
+                    error = null
+                    vm.shareTip(title, text) { result ->
+                        sending = false
+                        when (result) {
+                            com.lpecom.gemglasses.bobai.office.TipResult.SENT -> {
+                                vm.message = "Sent to the office for review."
+                                onDismiss()
+                            }
+                            com.lpecom.gemglasses.bobai.office.TipResult.NOT_SENIOR ->
+                                error = "Only senior technicians can share tips."
+                            com.lpecom.gemglasses.bobai.office.TipResult.INVALID ->
+                                error = "Check the title and text, then try again."
+                            com.lpecom.gemglasses.bobai.office.TipResult.FAILED ->
+                                error = "Couldn't send. Check the connection and try again."
+                        }
+                    }
+                },
+            ) { Text(if (sending) "Sending…" else "Send", fontWeight = FontWeight.ExtraBold) }
+        },
+        dismissButton = { TextButton(enabled = !sending, onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DocCard(vm: BobAiViewModel, d: SourceDocument, onOpen: () -> Unit) {
@@ -1083,9 +1168,9 @@ private fun DocCard(vm: BobAiViewModel, d: SourceDocument, onOpen: () -> Unit) {
     SectionCard(
         title = d.title,
         accentTone = tone,
-        trailingHeader = { TechnicalBadge("REV", d.revision) },
+        trailingHeader = { if (!d.isTip) TechnicalBadge("REV", d.revision) },
     ) {
-        Text("Revision ${d.revision} · Applies to: ${d.applicableModels.joinToString()}")
+        Text(d.tipLine() ?: "Revision ${d.revision} · Applies to: ${d.applicableModels.joinToString()}")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             when (d.approvalStatus) {
                 ApprovalStatus.APPROVED -> StatusChip("Approved", Tone.OK)
@@ -1112,7 +1197,7 @@ fun DocumentScreen(vm: BobAiViewModel, nav: NavHostController, docId: String, in
     var page by rememberSaveable { mutableStateOf(initialPage) }
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(doc?.title ?: "Document", onBack = { nav.popBackStack() }) {
-            doc?.let {
+            doc?.takeIf { !it.isTip }?.let {
                 TechnicalBadge("REV", it.revision)
                 Spacer(Modifier.width(8.dp))
             }
@@ -1143,11 +1228,14 @@ private fun DocumentBody(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             TechnicalBadge("DOC-ID", doc.id.uppercase())
-            TechnicalBadge("REV", doc.revision)
-            TechnicalBadge("MODELS", doc.applicableModels.joinToString())
+            if (!doc.isTip) {
+                TechnicalBadge("REV", doc.revision)
+                TechnicalBadge("MODELS", doc.applicableModels.joinToString())
+            }
         }
         Text(
-            "Revision ${doc.revision} · ${doc.approvalStatus.name.lowercase()} · Applies to ${doc.applicableModels.joinToString()}",
+            doc.tipLine()?.let { "$it · ${doc.approvalStatus.name.lowercase()}" }
+                ?: "Revision ${doc.revision} · ${doc.approvalStatus.name.lowercase()} · Applies to ${doc.applicableModels.joinToString()}",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1274,7 +1362,7 @@ fun JobsScreen(vm: BobAiViewModel, nav: NavHostController) {
         }
         ScrollPage {
             Text(
-                "Jobs are stored on this device only. Sync is not implemented yet.",
+                "Jobs from the office appear here when this phone is paired. Jobs you start on this phone stay on it.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1282,10 +1370,14 @@ fun JobsScreen(vm: BobAiViewModel, nav: NavHostController) {
             snapshot.jobs.sortedByDescending { it.updatedAt }.forEach { j ->
                 val done = j.status.name == "COMPLETED"
                 SectionCard(
-                    title = j.site,
+                    title = j.title.ifBlank { j.site },
                     accentTone = if (done) Tone.OK else Tone.WARN,
                     trailingHeader = { TechnicalBadge("WO#", j.id.takeLast(8).uppercase()) },
                 ) {
+                    if (j.title.isNotBlank()) Text(j.site)
+                    j.dueAt?.let { Text("Due $it") }
+                    if (j.description.isNotBlank()) Text(j.description)
+                    j.tasks.forEach { t -> Text((if (t.done) "[x] " else "[ ] ") + t.title) }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         StatusChip(
                             j.status.name.lowercase().replace('_', ' '),
@@ -1583,6 +1675,7 @@ fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
             WorkModeSettingsCard(vm)
             AssistanceModesCard(vm)
             KnowledgeSyncCard()
+            OfficeConsoleCard(vm)
             SectionCard(
                 title = "Hardware",
                 accentTone = if (glasses.ok) Tone.OK else Tone.WARN,
@@ -1654,6 +1747,48 @@ fun SettingsScreen(vm: BobAiViewModel, nav: NavHostController) {
 }
 
 @Composable
+private fun OfficeConsoleCard(vm: BobAiViewModel) {
+    val pairing by vm.pairing.collectAsStateWithLifecycle()
+    var code by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(Unit) { vm.refreshPairing() }
+    LaunchedEffect(pairing.paired) { if (pairing.paired) code = "" }
+    SectionCard(
+        title = "Office console",
+        accentTone = if (pairing.paired) Tone.OK else Tone.WARN,
+        trailingHeader = { TechnicalBadge("SYNC", if (pairing.paired) "PAIRED" else "NOT PAIRED") },
+    ) {
+        if (pairing.paired) {
+            StatusChip("Paired to ${pairing.userName}", Tone.OK)
+            Text(
+                "This phone signs in to BobAI with its own key. Jobs and manuals will come from the office console.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SecondaryAction("Unpair this phone", { vm.unpairPhone() })
+        } else {
+            Text(
+                "Ask your admin for a 6-digit pairing code from the BobAI console, then enter it here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it.filter(Char::isDigit).take(6) },
+                label = { Text("Pairing code") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            )
+            SecondaryAction(
+                if (pairing.busy) "Pairing…" else "Pair this phone",
+                { vm.pairPhone(code) },
+                enabled = !pairing.busy && code.length == 6,
+            )
+        }
+        pairing.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
 private fun <T> remember(key: Any?, calc: () -> T): T = androidx.compose.runtime.remember(key) { calc() }
 
 private fun captureLabel(vm: BobAiViewModel): String = when {
@@ -1706,14 +1841,272 @@ private fun CapturedPhoto(vm: BobAiViewModel, ref: String) {
  * "Hey Bob armed" only appears while a detector is running, which today it
  * never is.
  */
+/** Gemini Live voice assistance, with an explicit, time-limited live view (addendum §5). */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BobVoiceCard(vm: BobAiViewModel) {
+    val v by vm.voice.state.collectAsStateWithLifecycle()
+    val glasses by vm.glasses.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun micGranted() = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.RECORD_AUDIO,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun startVoice() { if (micGranted()) vm.startVoice() }
+
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) startVoice() }
+
+    SectionCard(
+        title = "Talk to Bob",
+        accentTone = when {
+            !v.active -> Tone.NEUTRAL
+            v.lastError != null -> Tone.WARN
+            else -> Tone.OK
+        },
+        trailingHeader = { TechnicalBadge("AI", "GEMINI LIVE") },
+    ) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            StatusChip(
+                "Voice: ${v.status.label}",
+                when (v.status) {
+                    VoiceStatus.OFF -> Tone.NEUTRAL
+                    VoiceStatus.CONNECTING, VoiceStatus.RECONNECTING, VoiceStatus.PAUSED -> Tone.WARN
+                    else -> Tone.OK
+                },
+            )
+            StatusChip(
+                v.media.label + if (v.media == MediaStatus.CLOUD_TRANSMISSION) " (${v.framesSent} sent)" else "",
+                if (v.media == MediaStatus.CAMERA_OFF) Tone.NEUTRAL else Tone.WARN,
+            )
+        }
+        if (!vm.voice.configured) {
+            Text(
+                "This build has no token service (GEMGLASSES_BACKEND_URL), so Gemini Live can't connect.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = toneColor(Tone.WARN),
+            )
+        }
+        v.lastError?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = toneColor(Tone.WARN))
+        }
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (!v.active) {
+                PrimaryAction("Start voice", {
+                    if (micGranted()) startVoice() else permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                })
+            } else {
+                SecondaryAction("End voice", { vm.voice.stop() })
+                if (v.status == VoiceStatus.PAUSED) {
+                    SecondaryAction("Resume", { vm.voice.setPaused(false) })
+                } else {
+                    SecondaryAction("Pause", { vm.voice.setPaused(true) })
+                }
+                if (v.media == MediaStatus.CLOUD_TRANSMISSION) {
+                    SecondaryAction("Stop camera", { vm.voice.stopLiveView() })
+                } else {
+                    SecondaryAction("Start live view", { vm.voice.startLiveView() }, enabled = glasses.ok)
+                }
+            }
+        }
+        v.transcript.takeLast(6).forEach { line ->
+            Text(
+                (if (line.fromTechnician) "You: " else "Bob: ") + line.text.trim(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (line.fromTechnician) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Text(
+            "While voice is on, your microphone audio goes to Google Gemini. Live view sends about one glasses " +
+                "frame per second for up to 60 seconds. Nothing is recorded, and the conversation isn't saved " +
+                "to the job. Bob only states facts from approved manuals; always verify with the procedure and " +
+                "your meter.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Offline AI spike: asks the on-device model, which may only rephrase the
+ * approved excerpt that manual search found. The label always says whether the
+ * text is the model's wording or the manual quoted verbatim.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OfflineAskCard(vm: BobAiViewModel) {
+    val o by vm.offline.state.collectAsStateWithLifecycle()
+    var question by rememberSaveable { mutableStateOf("") }
+    val ready = o.status == com.lpecom.gemglasses.bobai.offline.ModelStatus.READY
+
+    SectionCard(
+        title = "Ask Bob offline",
+        accentTone = if (ready) Tone.OK else Tone.NEUTRAL,
+        trailingHeader = { TechnicalBadge("ON-DEVICE", o.backend ?: "NO MODEL") },
+    ) {
+        StatusChip(
+            o.status.label,
+            when (o.status) {
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.READY -> Tone.OK
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.FAILED,
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.SELF_TEST_FAILED -> Tone.BAD
+                else -> Tone.NEUTRAL
+            },
+        )
+        o.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (o.status) {
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.NO_MODEL ->
+                    SecondaryAction("Check for model", { vm.offline.refreshPresence() })
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.LOADING -> Unit
+                com.lpecom.gemglasses.bobai.offline.ModelStatus.READY -> Unit
+                else -> SecondaryAction("Load model", { vm.loadOfflineModel() })
+            }
+        }
+        OutlinedTextField(
+            value = question,
+            onValueChange = { question = it },
+            label = { Text("Question about this equipment") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        PrimaryAction(
+            if (o.busy) "Thinking on-device…" else "Ask",
+            { vm.askOffline(question) },
+            enabled = question.isNotBlank() && !o.busy,
+        )
+        o.lastAnswer?.let { a ->
+            val (tag, body) = when (a) {
+                is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.Phrased ->
+                    "On-device model wording, checked against the source" to a.text
+                is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.Verbatim ->
+                    "Quoted from the manual (${a.reason})" to a.excerpt
+                is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.NotInSource ->
+                    "Model: the matching page doesn't answer this" to "Not in the approved manual. Check the manual or escalate."
+                is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.NoAnswer -> "No approved source" to a.message
+            }
+            StatusChip(tag, if (a is com.lpecom.gemglasses.bobai.offline.OfflineAnswer.Phrased) Tone.OK else Tone.NEUTRAL)
+            Text(body, style = MaterialTheme.typography.bodyLarge)
+            a.citations.forEach { c ->
+                Text("Source: ${c.label()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            o.lastLatencyMs?.let {
+                Text("Answered in ${it} ms", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Text(
+            "Runs entirely on this phone; nothing is sent anywhere. The model only rewords the manual page that " +
+                "search found and is checked before it's shown; if the check fails you see the manual text itself. " +
+                "Only the manual excerpt is saved to the job.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** The microphone for "Hey Bob", and on Android 13+ notifications so the ongoing "listening" notice can be shown. */
+private fun workModePermissions(): List<String> = buildList {
+    add(android.Manifest.permission.RECORD_AUDIO)
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        add(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
+}
+
+/**
+ * One card that walks a new technician through glasses, microphone, office
+ * pairing, sync and "Hey Bob" — then shrinks to a single "Ready" chip.
+ * Reuses the same permission request as Work Mode: "Allow" asks for the
+ * microphone (and notifications) but does not turn Work Mode on by itself.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SetupCard(vm: BobAiViewModel, nav: NavHostController) {
+    val wm by vm.workModeState.collectAsStateWithLifecycle()
+    val glasses by vm.glasses.collectAsStateWithLifecycle()
+    val pairing by vm.pairing.collectAsStateWithLifecycle()
+    val synced by vm.officeSynced.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun micNow() = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.RECORD_AUDIO,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    var micGranted by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(micNow()) }
+    val permission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
+    ) { micGranted = micNow() }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) micGranted = micNow()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+
+    val steps = setupSteps(
+        glassesConnected = glasses.ok,
+        micGranted = micGranted,
+        phonePaired = pairing.paired,
+        officeSynced = synced,
+        heyBobOn = wm.workModeOn && wm.phase != WorkPhase.UNAVAILABLE,
+    )
+    if (steps.all { it.done }) {
+        StatusChip("Ready — say \"Hey Bob\"", Tone.OK)
+        return
+    }
+    SectionCard(
+        title = "Get set up",
+        accentTone = Tone.WARN,
+        trailingHeader = { TechnicalBadge("SETUP", "${steps.count { it.done }}/${steps.size}") },
+    ) {
+        steps.forEach { step ->
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    (if (step.done) "Done: " else "To do: ") + step.label,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (step.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                )
+                step.action?.let { label ->
+                    SecondaryAction(label, {
+                        when (step.id) {
+                            "glasses" -> vm.registerGlasses()
+                            "mic" -> permission.launch(workModePermissions().toTypedArray())
+                            "pair" -> nav.goTop(Routes.SETTINGS)
+                            "sync" -> vm.refreshOffice()
+                            "heybob" -> if (micGranted) vm.workMode.enable() else permission.launch(workModePermissions().toTypedArray())
+                        }
+                    })
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
     val wm by vm.workModeState.collectAsStateWithLifecycle()
     val glasses by vm.glasses.collectAsStateWithLifecycle()
     val mode by vm.mode.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val wanted = workModePermissions()
+    fun allGranted() = wanted.all {
+        androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
     val permission = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
     ) { vm.workMode.enable() }
 
     // Permission can be revoked while the app is in the background.
@@ -1742,7 +2135,7 @@ private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
             StatusChip(heyBobLabel(wm), heyBobTone(wm))
             StatusChip(if (glasses.ok) "Glasses: connected" else "Glasses: not connected", if (glasses.ok) Tone.OK else Tone.WARN)
             StatusChip("AI mode: ${mode.mode.label}", mode.tone())
-            StatusChip(vm.mediaStatus.label, if (vm.capturing) Tone.WARN else Tone.NEUTRAL)
+            StatusChip(vm.mediaStatus.label, if (vm.mediaStatus != MediaStatus.CAMERA_OFF) Tone.WARN else Tone.NEUTRAL)
         }
         if (wm.workModeOn) {
             Text(
@@ -1759,15 +2152,15 @@ private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
         ) {
             if (!wm.workModeOn) {
                 SecondaryAction("Enable Work Mode", {
-                    if (vm.workMode.hasMicPermission()) {
+                    if (allGranted()) {
                         vm.workMode.enable()
                     } else {
-                        permission.launch(android.Manifest.permission.RECORD_AUDIO)
+                        permission.launch(wanted.toTypedArray())
                     }
                 })
             } else {
                 if (wm.isActive) {
-                    SecondaryAction("End assistance", { vm.workMode.endAssistance() })
+                    SecondaryAction("End assistance", { vm.endAssistance() })
                 } else if (wm.canStartManually) {
                     SecondaryAction("Start assistance", {
                         if (vm.workMode.startAssistance()) onStartAssistance()
@@ -1777,8 +2170,7 @@ private fun WorkModeCard(vm: BobAiViewModel, onStartAssistance: () -> Unit) {
             }
         }
         Text(
-            "Work Mode never records or uploads idle audio. Custom \"Hey Bob\" listening needs a wake-word " +
-                "engine that hasn't been selected yet, so assistance starts from the button for now.",
+            "Say \"Hey Bob\" to start. Listening happens on this phone only; no audio is saved or uploaded.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1812,16 +2204,18 @@ private fun WorkModeSettingsCard(vm: BobAiViewModel) {
     val wm by vm.workModeState.collectAsStateWithLifecycle()
     SectionCard(
         title = "Work Mode & Hey Bob",
-        accentTone = Tone.WARN,
-        trailingHeader = { TechnicalBadge("WAKE", "NOT INSTALLED") },
+        accentTone = if (wm.heyBobArmed || wm.isActive) Tone.OK else Tone.NEUTRAL,
+        trailingHeader = { TechnicalBadge("WAKE", "ON-DEVICE") },
     ) {
         Text("Wake-word engine: ${vm.workMode.engineName}", style = MaterialTheme.typography.bodyMedium)
         Text("Status: ${heyBobLabel(wm)}", style = MaterialTheme.typography.bodyMedium)
         Text(
-            "• Custom \"Hey Bob\" needs an on-device keyword-spotting engine. None has been chosen or tested yet " +
-                "(licence, offline start-up, false triggers, battery).\n" +
-                "• Whether the glasses microphone can be heard continuously, or only the phone microphone, is not " +
-                "yet tested.\n" +
+            "• \"Hey Bob\" uses this phone's own speech recognizer. It never uses an online recognizer; if the " +
+                "phone has none, use Start assistance.\n" +
+                "• What it hears is only checked for \"Hey Bob\" and then thrown away. No audio or words are saved " +
+                "or uploaded.\n" +
+                "• While Bob is talking with you, \"Hey Bob\" is off. It turns back on when the conversation ends.\n" +
+                "• With the glasses connected, it listens through the glasses microphone if the phone allows it.\n" +
                 "• Meta's own \"Hey Meta\" voice hand-off is a separate option in the Meta SDK. It is not the same " +
                 "as \"Hey Bob\" and is not wired up.\n" +
                 "• Listening will not resume after the app is force-stopped or the phone restarts.",
@@ -1866,5 +2260,73 @@ private fun KnowledgeSyncCard() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         SecondaryAction("Sync now", {}, enabled = false)
+    }
+}
+
+private fun fmtDateTime(t: Long): String =
+    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(t))
+
+/** Notes and drafts Bob saved by voice. They stay on this phone; drafts are never sent. */
+@Composable
+fun NotesScreen(vm: BobAiViewModel) {
+    val stickies by vm.stickies.stickies.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var confirmDelete by androidx.compose.runtime.remember { mutableStateOf<com.lpecom.gemglasses.bobai.domain.Sticky?>(null) }
+    Column(Modifier.fillMaxSize()) {
+        ScreenHeader("Notes") {
+            TechnicalBadge("TOTAL", "${stickies.size}")
+            Spacer(Modifier.width(8.dp))
+        }
+        ScrollPage {
+            if (stickies.isEmpty()) {
+                Text(
+                    "No notes yet. Say \"Hey Bob, make a note…\" or \"draft a message…\" and it will show up here.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            stickies.forEach { s ->
+                val isDraft = s.kind == com.lpecom.gemglasses.bobai.domain.StickyKind.DRAFT
+                SectionCard(
+                    title = s.title,
+                    modifier = Modifier.alpha(if (s.done) 0.55f else 1f),
+                    accentTone = if (s.done) Tone.OK else if (isDraft) Tone.WARN else Tone.NEUTRAL,
+                    trailingHeader = { StatusChip(if (isDraft) "Draft" else "Note", Tone.NEUTRAL) },
+                ) {
+                    Text(s.text)
+                    s.jobTitle?.let { Text("Job: $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Text(fmtDateTime(s.createdAt), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SecondaryAction(
+                            if (s.done) "Mark not done" else "Mark done",
+                            { vm.stickies.setDone(s.id, !s.done) },
+                        )
+                        if (isDraft) {
+                            SecondaryAction("Copy", {
+                                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                    as android.content.ClipboardManager
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText(s.title, s.text))
+                                vm.message = "Draft copied"
+                            })
+                        }
+                        SecondaryAction("Delete", { confirmDelete = s })
+                    }
+                }
+            }
+        }
+    }
+    confirmDelete?.let { s ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete this ${if (s.kind == com.lpecom.gemglasses.bobai.domain.StickyKind.DRAFT) "draft" else "note"}?") },
+            text = { Text("\"${s.title}\" will be removed from this phone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.stickies.delete(s.id)
+                    confirmDelete = null
+                }) { Text("Delete", fontWeight = FontWeight.ExtraBold) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
     }
 }

@@ -4,6 +4,12 @@ import com.lpecom.gemglasses.bobai.domain.EquipmentCandidate
 import com.lpecom.gemglasses.bobai.domain.EquipmentResolver
 import com.lpecom.gemglasses.bobai.domain.EvidenceAnswer
 import com.lpecom.gemglasses.bobai.domain.Job
+import com.lpecom.gemglasses.bobai.domain.JobTask
+import com.lpecom.gemglasses.bobai.domain.KnowledgePack
+import com.lpecom.gemglasses.bobai.domain.SourceDocument
+import com.lpecom.gemglasses.bobai.domain.SyncState
+import com.lpecom.gemglasses.bobai.office.OfficeKnowledge
+import com.lpecom.gemglasses.bobai.office.OfficeWork
 import com.lpecom.gemglasses.bobai.domain.JobStatus
 import com.lpecom.gemglasses.bobai.domain.KnowledgeRepository
 import com.lpecom.gemglasses.bobai.domain.NodeKind
@@ -31,7 +37,17 @@ class BobAiController(
     private val now: () -> Long = System::currentTimeMillis,
     private val newId: () -> String = { java.util.UUID.randomUUID().toString() },
 ) {
-    val resolver = EquipmentResolver(MockContent.knownModels)
+    @Volatile private var officeDocs: List<SourceDocument> = emptyList()
+    @Volatile private var officeModels: Map<String, String> = emptyMap()
+    @Volatile private var officeTenant: String? = null
+    @Volatile private var officeExpiresAt: Long = 0L
+
+    // Once paired to the office (its manuals are installed), the built-in demo packs, manuals and
+    // models are hidden: Bob must never answer a real technician from fictional demo content.
+    val resolver = EquipmentResolver { (if (officeActive()) emptyMap() else MockContent.knownModels) + officeModels }
+
+    /** Paired to the office: the "office-approved" pack is installed. */
+    fun officeActive(): Boolean = _state.value.packs.any { it.id == OFFICE_PACK_ID }
 
     /** Set when the saved file could not be read on launch. Shown to the user. */
     var loadWarning: String? = null
@@ -40,7 +56,15 @@ class BobAiController(
     private val _state = MutableStateFlow(initial())
     val state: StateFlow<StoreSnapshot> = _state
 
-    val knowledge = KnowledgeRepository(MockContent.documents, { _state.value.packs }, now)
+    // Office manuals past their expiry are not readable (the phone must refresh before relying on them).
+    val knowledge = KnowledgeRepository(
+        {
+            (if (officeActive()) emptyList() else MockContent.documents) +
+                if (now() < officeExpiresAt) officeDocs else emptyList()
+        },
+        { _state.value.packs },
+        now,
+    )
 
     private fun initial(): StoreSnapshot = when (val r = store.load()) {
         is LoadResult.Loaded -> r.snapshot
@@ -118,7 +142,9 @@ class BobAiController(
     fun candidates(labelText: String): List<EquipmentCandidate> = resolver.candidatesFromLabel(labelText)
 
     fun confirmEquipment(model: String, serial: String): EquipmentResolver.Confirmation {
-        val result = resolver.confirm(newId(), MockContent.TENANT, model, serial, MockContent.TECHNICIAN)
+        val isOfficeModel = resolver.normalizeModel(model).let { it in officeModels && (officeActive() || it !in MockContent.knownModels) }
+        val tenant = if (isOfficeModel) officeTenant ?: MockContent.TENANT else MockContent.TENANT
+        val result = resolver.confirm(newId(), tenant, model, serial, MockContent.TECHNICIAN)
         if (result is EquipmentResolver.Confirmation.Confirmed) {
             val eq = result.equipment
             val session = updateActive { session ->
@@ -305,6 +331,83 @@ class BobAiController(
         }
     }.trim()
 
+    // ---- office sync ---------------------------------------------------------
+
+    /** Installs the approved manuals downloaded from the office as the "office-approved" pack. */
+    fun applyOfficeKnowledge(k: OfficeKnowledge) {
+        val docs = k.documents.map { d ->
+            d.copy(
+                packId = OFFICE_PACK_ID, isMock = false,
+                applicableModels = d.applicableModels.map { resolver.normalizeModel(it) }.toSet(),
+            )
+        }
+        officeModels = docs.flatMap { d -> d.applicableModels.map { it to d.title } }.toMap()
+        officeTenant = k.tenantId
+        officeExpiresAt = k.expiresAt
+        officeDocs = docs
+        val t = now()
+        val pack = KnowledgePack(
+            id = OFFICE_PACK_ID, tenantId = k.tenantId, name = "Office manuals",
+            version = k.generatedAt.toString(), sizeBytes = 0, documentIds = docs.map { it.id },
+            state = PackState.COMPLETE, downloadedAt = t, lastVerifiedAt = t, expiresAt = k.expiresAt,
+        )
+        mutate { s ->
+            // Paired: the office pack replaces the built-in demo packs.
+            s.copy(packs = s.packs.filter { it.id != OFFICE_PACK_ID && it.id !in DEMO_PACK_IDS } + pack)
+        }
+    }
+
+    /**
+     * Forgets everything the office sent (phone removed or unpaired): its manuals, models and pack,
+     * and its jobs, except a job with a live session, which stays until that session ends.
+     */
+    fun clearOffice() {
+        officeDocs = emptyList()
+        officeModels = emptyMap()
+        officeTenant = null
+        officeExpiresAt = 0L
+        mutate { s ->
+            val liveJobIds = s.sessions.filter { it.status != SessionStatus.ENDED }.map { it.jobId }.toSet()
+            val kept = s.packs.filter { it.id != OFFICE_PACK_ID }
+            // Unpaired: the demo packs come back so the app can still be tried out.
+            val demo = MockContent.initialPacks(now()).filter { d -> kept.none { it.id == d.id } }
+            s.copy(
+                packs = kept + demo,
+                jobs = s.jobs.filter { it.officeId == null || it.id in liveJobIds },
+            )
+        }
+    }
+
+    /** Replaces the office-assigned jobs with [w]; local jobs and jobs with a live session stay. */
+    fun applyOfficeWork(w: OfficeWork) {
+        val t = now()
+        val tenant = officeTenant ?: MockContent.TENANT
+        mutate { s ->
+            val liveJobIds = s.sessions.filter { it.status != SessionStatus.ENDED }.map { it.jobId }.toSet()
+            val incoming = w.jobs.map { "office-" + it.id }.toSet()
+            val existing = s.jobs.associateBy { it.id }
+            val kept = s.jobs.filter { it.officeId == null || it.id in incoming || it.id in liveJobIds }
+                .filter { it.id !in incoming }
+            val upserted = w.jobs.map { row ->
+                val id = "office-" + row.id
+                Job(
+                    id = id, officeId = row.id, tenantId = tenant, site = row.site, title = row.title,
+                    description = row.description, dueAt = row.dueAt,
+                    status = when (row.status) {
+                        "in_progress" -> JobStatus.IN_PROGRESS
+                        "completed" -> JobStatus.COMPLETED
+                        else -> JobStatus.OPEN
+                    },
+                    isMock = false, syncState = SyncState.SYNCED,
+                    equipmentId = existing[id]?.equipmentId,
+                    createdAt = existing[id]?.createdAt ?: t, updatedAt = t,
+                    tasks = w.tasks.filter { it.jobId == row.id }.map { JobTask(it.id, it.title, it.completed == 1) },
+                )
+            }
+            s.copy(jobs = kept + upserted)
+        }
+    }
+
     // ---- packs (simulated; no network transfer happens) --------------------
 
     fun setPackState(packId: String, state: PackState) {
@@ -320,6 +423,11 @@ class BobAiController(
         }
     }
 }
+
+const val OFFICE_PACK_ID = "office-approved"
+
+/** The built-in demo packs, hidden while the phone is paired to the office. */
+private val DEMO_PACK_IDS: Set<String> = MockContent.initialPacks(0L).map { it.id }.toSet()
 
 const val MOCK_PHOTO_PREFIX = "mock-photo-"
 

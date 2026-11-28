@@ -64,3 +64,22 @@ Legend: **Works** = built and tested on hardware · **Built** = implemented and 
 
 - Build installs and runs. Enabling Work Mode requests microphone permission, then shows *Hey Bob: unavailable* with the reason, *Microphone route: Phone microphone — not yet verified*, and Start/Disable buttons. Never shows "armed".
 - Settings shows the Work Mode & Hey Bob limitations, five assistance modes (only *Look now* available), and Knowledge sync with no source and a disabled *Sync now*.
+
+## Update 2026-11-18: Gemini Live chosen as the AI provider
+
+Decision #2 is answered: **Gemini Live** (`gemini-3.8-live`, ephemeral tokens,
+`BidiGenerateContentConstrained` WebSocket).
+
+- `bobai/live/BobVoiceAssistant.kt` runs BobAI voice assistance. It handles mic and speaker routing,
+  Pause (stops sending the mic), End, and an explicit live view. Live view sends at most 1 fresh frame/s,
+  frames older than 3 s are dropped, and it stops by itself after 60 s.
+- The model gets two **read-only** tools (`bobai/live/BobLiveTools.kt`): `search_approved_manuals`
+  (answers only from approved, applicable local documents, with doc/rev/page) and `get_current_step`.
+  It cannot advance or change a procedure.
+- The transcript is shown in the card only and is never saved as a session observation.
+- `BuildConfig.LIVE_BACKEND_CONFIGURED` is true only when `GEMGLASSES_BACKEND_URL` is set. Until then the
+  Voice and Guided live view modes report "needs a token service".
+- Debug builds allow cleartext only to localhost/127.0.0.1/10.0.2.2, for `wrangler dev` over `adb reverse`.
+
+**Not yet tested end to end.** This needs a Gemini API key on the token service (set by the owner via
+`backend/.dev.vars` or `wrangler secret put GEMINI_API_KEY`) and the service running.

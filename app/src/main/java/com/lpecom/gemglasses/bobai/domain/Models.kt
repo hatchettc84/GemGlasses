@@ -47,7 +47,23 @@ data class SourceDocument(
     val packId: String?,
     val pages: List<DocPage>,
     val isMock: Boolean = true,
-)
+    /** "manual" or "tip" (an expert tip written by a senior technician). Unknown values read as a manual. */
+    val kind: String = KIND_MANUAL,
+    /** Display name of the senior technician who wrote a tip. */
+    val author: String? = null,
+) {
+    val isTip: Boolean get() = kind == KIND_TIP
+
+    /** Small line under a tip's title in the Library, or null for a manual. */
+    fun tipLine(): String? = if (isTip) "Tip · ${authorName()}" else null
+
+    fun authorName(): String = author?.trim()?.takeIf { it.isNotEmpty() } ?: "a senior technician"
+
+    companion object {
+        const val KIND_MANUAL = "manual"
+        const val KIND_TIP = "tip"
+    }
+}
 
 @Serializable
 data class EvidenceCitation(
@@ -56,8 +72,18 @@ data class EvidenceCitation(
     val revision: String,
     val page: Int,
     val excerpt: String,
+    val kind: String = SourceDocument.KIND_MANUAL,
+    val author: String? = null,
 ) {
-    fun label(): String = "$documentTitle, rev $revision, page $page"
+    val isTip: Boolean get() = kind == SourceDocument.KIND_TIP
+
+    /** How Bob and the screens name the source. A tip is "a tip from <author>", never a manual. */
+    fun label(): String =
+        if (isTip) {
+            "a tip from ${author?.trim()?.takeIf { it.isNotEmpty() } ?: "a senior technician"} (\"$documentTitle\")"
+        } else {
+            "$documentTitle, rev $revision, page $page"
+        }
 }
 
 @Serializable
@@ -122,7 +148,16 @@ data class Job(
     val createdAt: Long,
     val updatedAt: Long,
     val isMock: Boolean = false,
+    val title: String = "",
+    val description: String = "",
+    val dueAt: String? = null,
+    /** Backend job id for jobs assigned from the office; null for local jobs. */
+    val officeId: String? = null,
+    val tasks: List<JobTask> = emptyList(),
 )
+
+@Serializable
+data class JobTask(val id: String, val title: String, val done: Boolean)
 
 @Serializable
 enum class SessionStatus { ACTIVE, PAUSED, ENDED }

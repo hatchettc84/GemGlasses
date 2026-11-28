@@ -5,7 +5,6 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -18,6 +17,7 @@ import com.lpecom.gemglasses.bobai.data.StoreSnapshot
 import com.lpecom.gemglasses.bobai.domain.ModeResolver
 import com.lpecom.gemglasses.bobai.domain.ModeStatus
 import com.lpecom.gemglasses.bobai.live.AssistanceFacts
+import com.lpecom.gemglasses.bobai.live.BobVoiceAssistant
 import com.lpecom.gemglasses.bobai.live.AssistanceModes
 import com.lpecom.gemglasses.bobai.live.MediaStatus
 import com.lpecom.gemglasses.bobai.live.ModeAvailability
@@ -37,12 +37,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.withLock
+import kotlin.time.Duration.Companion.minutes
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /** Truthful glasses status. Mock builds never claim real hardware is connected. */
 data class GlassesStatus(val label: String, val detail: String, val ok: Boolean)
+
+/** Office console pairing as shown in Settings. */
+data class PairingUi(
+    val paired: Boolean = false,
+    val userName: String? = null,
+    val busy: Boolean = false,
+    val message: String? = null,
+)
 
 @HiltViewModel
 class BobAiViewModel @Inject constructor(
@@ -51,7 +62,26 @@ class BobAiViewModel @Inject constructor(
     private val glassesManager: GlassesManager,
     private val cameraSource: GlassesCameraSource,
     val workMode: WorkModeController,
+    val voice: BobVoiceAssistant,
+    val stickies: com.lpecom.gemglasses.bobai.data.StickyRepository,
+    val offline: com.lpecom.gemglasses.bobai.offline.OfflineAssistant,
+    private val pairingClient: com.lpecom.gemglasses.bobai.sync.PairingClient,
+    private val deviceKeys: com.lpecom.gemglasses.bobai.sync.DeviceKeyStore,
+    private val officeSync: com.lpecom.gemglasses.bobai.office.OfficeSync,
+    // Process-scoped "Hey Bob" → voice → re-arm hand-off; injected so it exists once Work Mode can be on.
+    @Suppress("unused") private val wakeSession: com.lpecom.gemglasses.bobai.workmode.WakeSessionCoordinator,
 ) : AndroidViewModel(application) {
+
+    /** Loads the on-device model (pushed with adb for the spike) and runs its self-test. */
+    fun loadOfflineModel() {
+        viewModelScope.launch { offline.load() }
+    }
+
+    /** Asks the on-device path: manual search first, the model only rephrases the excerpt. */
+    fun askOffline(question: String) {
+        if (question.isBlank() || offline.state.value.busy) return
+        viewModelScope.launch { offline.answer(question.trim()) }
+    }
 
     /**
      * Hardware check: runs a 5-second camera burst, saves the first frame to
@@ -172,9 +202,142 @@ class BobAiViewModel @Inject constructor(
     private val _online = MutableStateFlow(currentlyOnline())
     val online: StateFlow<Boolean> = _online
 
-    val mode: StateFlow<ModeStatus> = combine(_online, controller.state) { net, s ->
+    private val _pairing = MutableStateFlow(PairingUi())
+    val pairing: StateFlow<PairingUi> = _pairing
+
+    /** Bumped by pairPhone/unpairPhone so an in-flight refreshPairing can tell its read is stale. */
+    private val pairingGeneration = java.util.concurrent.atomic.AtomicInteger()
+
+    /** Re-reads the stored pairing off the main thread (the token provider may have marked this phone removed). */
+    fun refreshPairing() {
+        val gen = pairingGeneration.get()
+        viewModelScope.launch {
+            val (pairing, removed) = withContext(Dispatchers.IO) { deviceKeys.get() to deviceKeys.wasRemoved() }
+            // A pair/unpair finished while we were reading: our result is stale.
+            if (pairingGeneration.get() != gen) return@launch
+            val current = _pairing.value
+            if (current.busy) return@launch
+            _pairing.value = when {
+                pairing != null -> PairingUi(paired = true, userName = pairing.userName, message = current.message)
+                removed -> PairingUi(message = REMOVED_MESSAGE)
+                else -> PairingUi(message = current.message.takeIf { current.paired.not() && it != REMOVED_MESSAGE })
+            }
+        }
+    }
+
+    private val _officeStatus = MutableStateFlow("Office: not synced yet")
+    val officeStatus: StateFlow<String> = _officeStatus
+
+    private val _officeSynced = MutableStateFlow(false)
+
+    /** True when the last office sync succeeded. */
+    val officeSynced: StateFlow<Boolean> = _officeSynced
+
+    private val _senior = MutableStateFlow(false)
+
+    /** True when the office says this phone's user is a senior technician: the Library shows "Share a tip". */
+    val senior: StateFlow<Boolean> = _senior
+
+    /** Sends a tip to the office for review. [onResult] runs on the main thread. */
+    fun shareTip(title: String, text: String, onResult: (com.lpecom.gemglasses.bobai.office.TipResult) -> Unit) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { officeSync.submitTip(title, text) }
+            _senior.value = officeSync.senior
+            onResult(result)
+        }
+    }
+
+    private val officeMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** Pulls manuals and jobs from the office and updates [officeStatus]. Never throws. */
+    fun refreshOffice() {
+        viewModelScope.launch {
+            officeMutex.withLock {
+                val outcome = withContext(Dispatchers.IO) {
+                    if (deviceKeys.wasRemoved()) {
+                        // Removed by the office: keep no office manuals or jobs on this phone.
+                        officeSync.forget()
+                        com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed
+                    } else {
+                        officeSync.syncNow()
+                    }
+                }
+                _senior.value = officeSync.senior
+                _officeSynced.value = outcome is com.lpecom.gemglasses.bobai.office.SyncOutcome.Synced ||
+                    outcome is com.lpecom.gemglasses.bobai.office.SyncOutcome.Partial
+                _officeStatus.value = when (outcome) {
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Synced,
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Partial -> {
+                        val s = controller.state.value
+                        val manuals = s.packs.firstOrNull { it.id == com.lpecom.gemglasses.bobai.data.OFFICE_PACK_ID }?.documentIds?.size ?: 0
+                        val jobs = s.jobs.count { it.officeId != null }
+                        val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date())
+                        val synced = "Office: synced $time · $manuals manuals · $jobs jobs"
+                        val partial = outcome as? com.lpecom.gemglasses.bobai.office.SyncOutcome.Partial
+                        val notUpdated = partial?.notUpdated ?: 0
+                        buildString {
+                            append(synced)
+                            if (notUpdated > 0) append(" · $notUpdated ${if (notUpdated == 1) "manual" else "manuals"} not updated")
+                            // Jobs shown are the last ones received; the office's jobs source didn't answer.
+                            if (partial?.jobsNotUpdated == true) append(" · jobs not updated")
+                        }
+                    }
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.NotPaired -> "Office: not paired"
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Removed -> "Office: this phone was removed. Ask your admin to pair it again."
+                    is com.lpecom.gemglasses.bobai.office.SyncOutcome.Failed -> {
+                        Log.w("BobAiViewModel", "office sync failed: ${outcome.message}")
+                        "Office: sync failed. Check the connection."
+                    }
+                }
+            }
+        }
+    }
+
+    /** Pairs this phone with the office console using a 6-digit code from an admin. */
+    fun pairPhone(code: String) {
+        if (_pairing.value.busy) return
+        _pairing.value = _pairing.value.copy(busy = true, message = null)
+        pairingGeneration.incrementAndGet()
+        viewModelScope.launch {
+            val result = try {
+                when (val r = pairingClient.pair(code, android.os.Build.MODEL)) {
+                    is com.lpecom.gemglasses.bobai.sync.PairResult.Paired -> {
+                        refreshOffice()
+                        PairingUi(paired = true, userName = r.userName, message = "Paired to ${r.userName}.")
+                    }
+                    is com.lpecom.gemglasses.bobai.sync.PairResult.Rejected -> PairingUi(message = r.message)
+                    is com.lpecom.gemglasses.bobai.sync.PairResult.Failed -> PairingUi(message = r.message)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "pairing failed unexpectedly", e)
+                PairingUi(message = "Couldn't pair this phone. Try again.")
+            }
+            pairingGeneration.incrementAndGet()
+            _pairing.value = result
+        }
+    }
+
+    /** Forgets the device key on this phone. An admin can also remove the phone in the console. */
+    fun unpairPhone() {
+        pairingGeneration.incrementAndGet()
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                deviceKeys.clear()
+                // An unpaired phone keeps no office manuals or customer jobs.
+                officeMutex.withLock { officeSync.forget() }
+            }
+            _senior.value = false
+            pairingGeneration.incrementAndGet()
+            _pairing.value = PairingUi(message = "This phone is unpaired. Your admin can also remove it in the console.")
+        }
+    }
+
+    val mode: StateFlow<ModeStatus> = combine(_online, controller.state, offline.state) { net, s, o ->
         val now = System.currentTimeMillis()
-        ModeResolver.resolve(net, s.packs.count { it.isUsable(now) }, localModelValidated = false)
+        // Only a loaded model that passed its grounding self-test counts.
+        ModeResolver.resolve(net, s.packs.count { it.isUsable(now) }, localModelValidated = o.validated)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ModeResolver.resolve(_online.value, 0, false))
 
     val glasses: StateFlow<GlassesStatus> =
@@ -195,21 +358,61 @@ class BobAiViewModel @Inject constructor(
 
     val workModeState: StateFlow<WorkModeState> = workMode.state
 
+    /**
+     * Talk to Bob from the button. If Work Mode is listening, it is paused
+     * first (as a manual start) so the detector lets go of the microphone; it
+     * re-arms when voice is turned off.
+     */
+    @androidx.annotation.RequiresPermission(android.Manifest.permission.RECORD_AUDIO)
+    @android.annotation.SuppressLint("MissingPermission") // the delayed start below runs under the same grant
+    fun startVoice() {
+        val wm = workMode.state.value
+        if (wm.workModeOn && !wm.isActive && workMode.startAssistance()) {
+            viewModelScope.launch {
+                delay(MIC_HANDOFF_SETTLE_MS)
+                // Same guard as the wake path: only start if nothing else has
+                // since, and never leave Work Mode stuck in ACTIVE on failure.
+                if (voice.state.value.active || !workMode.state.value.isActive) return@launch
+                val started = runCatching { voice.start() }
+                if (started.isFailure) {
+                    Log.w(TAG, "voice did not start after the manual start: ${started.exceptionOrNull()?.javaClass?.simpleName}")
+                    runCatching { voice.stop() }
+                    workMode.endAssistance()
+                }
+            }
+        } else {
+            voice.start()
+        }
+    }
+
+    /** Ends Work Mode assistance. With voice on, stopping voice re-arms "Hey Bob" once the mic is free. */
+    fun endAssistance() {
+        if (voice.state.value.active) voice.stop() else workMode.endAssistance()
+    }
+
     /** Addendum §5 assistance modes, from facts only. */
     val assistanceModes: StateFlow<List<ModeAvailability>> =
-        combine(_online, controller.state, glasses) { net, s, g ->
+        combine(_online, controller.state, glasses, offline.state) { net, s, g, o ->
             val now = System.currentTimeMillis()
             AssistanceModes.resolve(
                 AssistanceFacts(
                     online = net,
                     glassesConnected = g.ok,
                     usableReferencePacks = s.packs.count { it.isUsable(now) },
+                    bobAiVoiceProviderWired = voice.configured,
+                    liveViewProviderWired = voice.configured,
+                    localModelValidated = o.validated,
                 ),
             )
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** Camera media status. Nothing is ever sent to an AI or recorded yet. */
-    val mediaStatus: MediaStatus get() = if (capturing) MediaStatus.LOCAL_CAPTURE else MediaStatus.CAMERA_OFF
+    /** Camera media status. Live view (Gemini) wins over a local capture; nothing is recorded. */
+    val mediaStatus: MediaStatus
+        get() = when {
+            voice.state.value.media == MediaStatus.CLOUD_TRANSMISSION -> MediaStatus.CLOUD_TRANSMISSION
+            capturing -> MediaStatus.LOCAL_CAPTURE
+            else -> MediaStatus.CAMERA_OFF
+        }
 
     // UI state that must survive fold/unfold (configuration change) — held here, not in composables.
     var draftInput by mutableStateOf("")
@@ -225,27 +428,42 @@ class BobAiViewModel @Inject constructor(
     }
 
     private val connectivity = application.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    // Track only the system default network and trust the capabilities its
+    // callback delivers. Listening to every network and re-reading
+    // activeNetwork on each event could latch "offline" when a secondary
+    // network (cellular, VPN) dropped while the default was switching.
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) { _online.value = currentlyOnline() }
-        override fun onLost(network: Network) { _online.value = currentlyOnline() }
-        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) { _online.value = currentlyOnline() }
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            _online.value = caps.isOnline()
+        }
+        override fun onLost(network: Network) { _online.value = false }
     }
 
     init {
-        runCatching {
-            connectivity.registerNetworkCallback(
-                NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
-                callback,
-            )
+        refreshPairing()
+        viewModelScope.launch {
+            val paired = withContext(Dispatchers.IO) {
+                officeSync.loadCached()
+                deviceKeys.get() != null
+            }
+            if (!paired) _officeStatus.value = "Office: not paired"
+            while (isActive) {
+                refreshOffice()
+                delay(15.minutes)
+            }
         }
+        runCatching { connectivity.registerDefaultNetworkCallback(callback) }
+            .onFailure { Log.w("BobAiViewModel", "network callback failed", it) }
     }
 
     private fun currentlyOnline(): Boolean {
         val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return cm.getNetworkCapabilities(cm.activeNetwork)?.isOnline() ?: false
     }
+
+    private fun NetworkCapabilities.isOnline() =
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 
     override fun onCleared() {
         runCatching { connectivity.unregisterNetworkCallback(callback) }
@@ -253,9 +471,12 @@ class BobAiViewModel @Inject constructor(
 
     private companion object {
         const val CAPTURE_DIR = "captures"
+        /** Time for one microphone client to close its input before the other opens. */
+        const val MIC_HANDOFF_SETTLE_MS = com.lpecom.gemglasses.bobai.workmode.WakeSessionCore.MIC_HANDOFF_SETTLE_MS
         const val CAPTURE_ATTEMPTS = 2
         const val RECONNECT_SETTLE_MS = 1_500L
         const val RECONNECT_TIMEOUT_MS = 8_000L
         const val TAG = "BobAiViewModel"
+        const val REMOVED_MESSAGE = "This phone was removed. Ask your admin to pair it again."
     }
 }
